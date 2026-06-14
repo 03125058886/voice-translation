@@ -56,6 +56,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   bool _lobbyConnected = false;
   IncomingCall? _incomingCall;
   Timer? _lobbyConnectDebounce;
+  Timer? _callTimeoutTimer;
+  String _loadingMessage = '';
 
   @override
   void initState() {
@@ -91,21 +93,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _nameCtrl.dispose();
     _targetPhoneCtrl.dispose();
     _lobbyConnectDebounce?.cancel();
+    _callTimeoutTimer?.cancel();
     _lobby.disconnect();
     super.dispose();
   }
 
   void _setupFcmCallbacks() {
-    NotificationService.onIncomingCallData = (data) {
-      if (!mounted) return;
-      final call = IncomingCall(
-        callerId: data['caller_id'] ?? '',
-        callerName: data['caller_name'] ?? 'Unknown',
-        callerLanguage: data['caller_language'] ?? 'en',
-        sessionId: data['session_id'] ?? '',
-      );
-      setState(() => _incomingCall = call);
-    };
+    NotificationService.onIncomingCallData = _handleFcmCallData;
+
+    // If app was opened by tapping a notification while terminated/background
+    final pending = NotificationService.pendingCallData;
+    if (pending != null) {
+      NotificationService.pendingCallData = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _handleFcmCallData(pending));
+    }
+  }
+
+  void _handleFcmCallData(Map<String, dynamic> data) {
+    if (!mounted) return;
+    final call = IncomingCall(
+      callerId: data['caller_id'] ?? '',
+      callerName: data['caller_name'] ?? 'Unknown',
+      callerLanguage: data['caller_language'] ?? 'en',
+      sessionId: data['session_id'] ?? '',
+    );
+    setState(() => _incomingCall = call);
   }
 
   void _setupLobbyCallbacks() {
@@ -133,24 +145,57 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _lobby.onCallInitiated = (call) async {
       if (!mounted) return;
       if (!call.targetFound) {
-        _toast('User is not available right now');
+        _toast('User not found or unavailable');
+        if (mounted) setState(() { _loading = false; _loadingMessage = ''; });
         return;
       }
-      setState(() => _loading = true);
-      try {
-        await ref.read(callProvider.notifier).enterAsHost(
-          sessionId: call.sessionId,
-          participantId: call.participantId,
-          name: _nameCtrl.text.trim(),
-          language: _language,
-        );
-        await ref.read(callProvider.notifier).startCapture();
-        if (!mounted) return;
-        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CallScreen()));
-      } catch (e) {
-        _toast(e.toString().replaceAll('Exception: ', ''));
-      } finally {
-        if (mounted) setState(() => _loading = false);
+
+      // If target was online (lobby), go directly to call screen
+      // If target was offline (FCM sent), show "Ringing..." and wait
+      if (call.targetUserId.isNotEmpty) {
+        // Online — proceed immediately
+        try {
+          await ref.read(callProvider.notifier).enterAsHost(
+            sessionId: call.sessionId,
+            participantId: call.participantId,
+            name: _nameCtrl.text.trim(),
+            language: _language,
+          );
+          await ref.read(callProvider.notifier).startCapture();
+          if (!mounted) return;
+          Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CallScreen()));
+        } catch (e) {
+          _toast(e.toString().replaceAll('Exception: ', ''));
+        } finally {
+          if (mounted) setState(() { _loading = false; _loadingMessage = ''; });
+        }
+      } else {
+        // Offline — FCM sent. Show ringing state, wait for them to join
+        if (mounted) setState(() => _loadingMessage = 'Ringing...');
+        _callTimeoutTimer?.cancel();
+        _callTimeoutTimer = Timer(const Duration(seconds: 30), () {
+          if (mounted) {
+            setState(() { _loading = false; _loadingMessage = ''; });
+            _toast('No answer — user may be unavailable');
+          }
+        });
+        // Enter as host now so session is ready when B joins
+        try {
+          await ref.read(callProvider.notifier).enterAsHost(
+            sessionId: call.sessionId,
+            participantId: call.participantId,
+            name: _nameCtrl.text.trim(),
+            language: _language,
+          );
+          await ref.read(callProvider.notifier).startCapture();
+          if (!mounted) return;
+          _callTimeoutTimer?.cancel();
+          Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CallScreen()));
+        } catch (e) {
+          _toast(e.toString().replaceAll('Exception: ', ''));
+        } finally {
+          if (mounted) setState(() { _loading = false; _loadingMessage = ''; });
+        }
       }
     };
 
@@ -251,6 +296,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Future<void> _acceptCall(IncomingCall call) async {
+    NotificationService.cancelCallNotification();
     setState(() { _incomingCall = null; _loading = true; });
     final profile = ref.read(authProvider);
     try {
@@ -271,6 +317,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   void _rejectCall(IncomingCall call) {
+    NotificationService.cancelCallNotification();
     _lobby.rejectCall(call.callerId);
     setState(() => _incomingCall = null);
   }
@@ -594,7 +641,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               ),
             ),
             const SizedBox(height: 8),
-            const Text('Voice Call', style: TextStyle(color: AppColors.surface400, fontSize: 12, fontWeight: FontWeight.w500)),
+            if (_loadingMessage.isNotEmpty)
+              Column(
+                children: [
+                  Text(_loadingMessage, style: const TextStyle(color: AppColors.green400, fontSize: 12, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  GestureDetector(
+                    onTap: () {
+                      _callTimeoutTimer?.cancel();
+                      setState(() { _loading = false; _loadingMessage = ''; });
+                    },
+                    child: const Text('Cancel', style: TextStyle(color: AppColors.red500, fontSize: 11)),
+                  ),
+                ],
+              )
+            else
+              const Text('Voice Call', style: TextStyle(color: AppColors.surface400, fontSize: 12, fontWeight: FontWeight.w500)),
           ],
         ),
         const SizedBox(width: 48),

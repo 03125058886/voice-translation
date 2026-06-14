@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -59,7 +60,8 @@ async def send_incoming_call(
             ),
             token=fcm_token,
         )
-        messaging.send(message)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, messaging.send, message)
         logger.info(f"FCM call notification sent to {fcm_token[:10]}…")
         return True
     except Exception as e:
