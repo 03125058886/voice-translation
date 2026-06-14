@@ -18,6 +18,8 @@ class Settings(BaseSettings):
         "http://localhost",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8080",
+        "https://voice-translation-production.up.railway.app",
+        "*",
     ]
 
     # OpenAI (fallback only)

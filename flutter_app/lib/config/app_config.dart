@@ -1,8 +1,6 @@
 class AppConfig {
   // Change these to your backend server address
-  static const String apiBaseUrl = 'http://192.168.100.11:8000'; // Local network IP
-  // For physical device use your machine's local IP: 'http://192.168.1.x:8000'
-  // For production: 'https://your-domain.com'
+  static const String apiBaseUrl = 'https://voice-translation-production.up.railway.app';
 
   static String get wsBaseUrl =>
       apiBaseUrl.replaceFirst('http://', 'ws://').replaceFirst('https://', 'wss://');
