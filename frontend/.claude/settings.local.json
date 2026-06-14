@@ -48,7 +48,11 @@
       "PowerShell(& \"C:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\\\\bin\\\\keytool.exe\" -list -v -keystore \"$env:USERPROFILE\\\\.android\\\\debug.keystore\" -alias androiddebugkey -storepass android -keypass android 2>&1)",
       "PowerShell(ssh-keygen *)",
       "Bash(ssh-keygen *)",
-      "PowerShell(Get-Content *)"
+      "PowerShell(Get-Content *)",
+      "PowerShell(keytool -list -v -keystore \"$env:USERPROFILE\\\\.android\\\\debug.keystore\" -alias androiddebugkey -storepass android -keypass android 2>$null | Select-String \"SHA1\")",
+      "PowerShell(& \"C:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\\\\bin\\\\keytool.exe\" -list -v -keystore \"$env:USERPROFILE\\\\.android\\\\debug.keystore\" -alias androiddebugkey -storepass android -keypass android 2>$null | Select-String \"SHA1\")",
+      "WebFetch(domain:voice-translation-production.up.railway.app)",
+      "PowerShell(Get-Item \"C:\\\\Users\\\\Farhan Zahid\\\\voice-translation-platform\\\\flutter_app\\\\build\\\\app\\\\outputs\\\\flutter-apk\\\\app-release.apk\" -ErrorAction SilentlyContinue | Select-Object Name, LastWriteTime, @{N='SizeMB';E={[math]::Round\\($_.Length/1MB,1\\)}})"
     ]
   }
 }

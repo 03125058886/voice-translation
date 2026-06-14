@@ -6,10 +6,11 @@ logger = logging.getLogger(__name__)
 
 
 class OnlineUser:
-    def __init__(self, user_id: str, name: str, language: str, websocket: WebSocket):
+    def __init__(self, user_id: str, name: str, language: str, websocket: WebSocket, phone: str = ""):
         self.user_id = user_id
         self.name = name
         self.language = language
+        self.phone = phone
         self.websocket = websocket
 
     def to_dict(self) -> dict:
@@ -38,6 +39,12 @@ class LobbyManager:
 
     def get_user(self, user_id: str) -> Optional[OnlineUser]:
         return self._users.get(user_id)
+
+    def get_user_by_phone(self, phone: str) -> Optional[OnlineUser]:
+        for user in self._users.values():
+            if user.phone and user.phone == phone:
+                return user
+        return None
 
     async def send_to(self, user_id: str, data: dict) -> bool:
         user = self._users.get(user_id)

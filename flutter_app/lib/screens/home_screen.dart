@@ -76,7 +76,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             language: profile.language,
           );
         }
-        _connectLobby(widget.initialName, widget.initialLanguage);
+        _connectLobby(widget.initialName, widget.initialLanguage, phone: profile?.phone);
       });
     }
   }
@@ -166,11 +166,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _connectLobby(name, _language);
   }
 
-  Future<void> _connectLobby(String name, String language) async {
+  Future<void> _connectLobby(String name, String language, {String? phone}) async {
     if (_lobbyConnected) {
       await _lobby.disconnect();
     }
-    await _lobby.connect(name: name, language: language);
+    await _lobby.connect(name: name, language: language, phone: phone);
     if (mounted) setState(() => _lobbyConnected = _lobby.isConnected);
   }
 
@@ -179,19 +179,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (profile == null) return;
 
     final targetPhone = _targetPhoneCtrl.text.trim();
-    String? resolvedTarget;
 
+    // If a phone number is entered, ring that person via lobby
     if (targetPhone.isNotEmpty) {
       final formatted = targetPhone.startsWith('+') ? targetPhone : '+92${targetPhone.replaceFirst(RegExp(r'^0'), '')}';
-      final found = await ApiService.findUserByPhone(formatted);
-      if (found == null) {
-        _toast('No user found with that number');
+
+      // Connect to lobby first (with phone) if not already connected
+      if (!_lobbyConnected) {
+        setState(() => _loading = true);
+        await _connectLobby(profile.name, profile.language, phone: profile.phone);
+        setState(() => _loading = false);
+      }
+
+      if (!_lobbyConnected) {
+        _toast('Could not connect to server. Check internet.');
         return;
       }
-      resolvedTarget = formatted;
-      setState(() => _targetUser = found);
+
+      setState(() => _loading = true);
+      _lobby.callByPhone(formatted);
+      // _onCallInitiated callback handles the rest (same as callUser flow)
+      return;
     }
 
+    // No phone number — open session (anyone can join by session ID)
     setState(() => _loading = true);
     try {
       await ref.read(callProvider.notifier).createSession(
@@ -199,7 +210,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         language: profile.language,
         domain: _domain,
         callerPhone: profile.phone,
-        targetPhone: resolvedTarget,
       );
       if (!mounted) return;
       await ref.read(callProvider.notifier).startCapture();

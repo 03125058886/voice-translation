@@ -14,8 +14,8 @@ final callProvider = StateNotifierProvider<CallNotifier, CallState>((ref) {
 class CallNotifier extends StateNotifier<CallState> {
   CallNotifier() : super(const CallState());
 
-  final _ws = WebSocketService();
-  final _audio = AudioService();
+  WebSocketService _ws = WebSocketService();
+  AudioService _audio = AudioService();
   final _uuid = const Uuid();
 
   // --- Session creation ---
@@ -83,6 +83,9 @@ class CallNotifier extends StateNotifier<CallState> {
   // --- WebSocket + audio ---
 
   Future<void> _connectAndStart() async {
+    // Fresh services for each call
+    _ws = WebSocketService();
+    _audio = AudioService();
     await _audio.initialize();
 
     _audio.onChunk = (bytes) => _ws.sendAudio(bytes);

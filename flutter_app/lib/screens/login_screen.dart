@@ -59,7 +59,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       },
       onAutoVerified: (credential) {
         _autoCredential = credential;
-        if (mounted) setState(() { _step = _Step.profile; });
+        if (mounted) setState(() { _loading = false; _step = _Step.profile; });
+      },
+      onFailed: (msg) {
+        if (mounted) setState(() { _loading = false; _error = msg; });
       },
     );
 

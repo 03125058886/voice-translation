@@ -76,14 +76,15 @@ class LobbyService {
   CallRejectedCallback? onCallRejected;
   UserStatusCallback? onUserStatusChange;
 
-  Future<void> connect({required String name, required String language}) async {
+  Future<void> connect({required String name, required String language, String? phone}) async {
     _name = name;
     _language = language;
     _userId ??= _uuid.v4();
 
     final wsBase = AppConfig.wsBaseUrl;
+    final phoneParam = phone != null && phone.isNotEmpty ? '&phone=${Uri.encodeComponent(phone)}' : '';
     final uri = Uri.parse(
-      '$wsBase/ws/lobby?name=${Uri.encodeComponent(name)}&language=$language&user_id=$_userId',
+      '$wsBase/ws/lobby?name=${Uri.encodeComponent(name)}&language=$language&user_id=$_userId$phoneParam',
     );
 
     try {
@@ -161,6 +162,13 @@ class LobbyService {
     _send({
       'type': 'call_user',
       'data': {'target_user_id': targetUserId},
+    });
+  }
+
+  void callByPhone(String targetPhone) {
+    _send({
+      'type': 'call_by_phone',
+      'data': {'target_phone': targetPhone},
     });
   }
 

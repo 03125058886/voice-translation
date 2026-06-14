@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -43,20 +44,51 @@ class AuthNotifier extends StateNotifier<UserProfile?> {
     required String phone,
     required void Function(String verificationId) onCodeSent,
     required void Function(PhoneAuthCredential) onAutoVerified,
+    required void Function(String error) onFailed,
   }) async {
+    final completer = Completer<String?>();
+
     try {
       await _auth.verifyPhoneNumber(
         phoneNumber: phone,
-        verificationCompleted: onAutoVerified,
-        verificationFailed: (e) {},
-        codeSent: (verificationId, _) => onCodeSent(verificationId),
-        codeAutoRetrievalTimeout: (_) {},
-        timeout: const Duration(seconds: 60),
+        verificationCompleted: (credential) {
+          onAutoVerified(credential);
+          if (!completer.isCompleted) completer.complete(null);
+        },
+        verificationFailed: (e) {
+          final msg = switch (e.code) {
+            'invalid-phone-number' => 'Invalid phone number format.',
+            'too-many-requests'    => 'Too many attempts. Try again later.',
+            'app-not-authorized'   => 'App not authorized for Firebase (check SHA-1).',
+            'quota-exceeded'       => 'SMS quota exceeded. Try again later.',
+            _                      => '${e.message ?? e.code}',
+          };
+          onFailed(msg);
+          if (!completer.isCompleted) completer.complete(msg);
+        },
+        codeSent: (verificationId, _) {
+          onCodeSent(verificationId);
+          if (!completer.isCompleted) completer.complete(null);
+        },
+        codeAutoRetrievalTimeout: (_) {
+          if (!completer.isCompleted) completer.complete(null);
+        },
+        timeout: const Duration(seconds: 30),
       );
-      return null;
     } catch (e) {
-      return 'Failed to send OTP: ${e.toString().split('\n').first}';
+      if (!completer.isCompleted) {
+        completer.complete('Error: ${e.toString().split('\n').first}');
+      }
     }
+
+    // Timeout fallback — if Firebase never responds in 35s
+    return Future.any([
+      completer.future,
+      Future.delayed(
+        const Duration(seconds: 35),
+        () => 'OTP request timed out. Check internet & Firebase setup.',
+      ),
+    ]);
   }
 
   /// Step 2: Verify OTP and complete login

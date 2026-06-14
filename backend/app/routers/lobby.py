@@ -29,6 +29,7 @@ async def lobby_websocket(
     name: str = Query(...),
     language: str = Query("en"),
     user_id: str = Query(None),
+    phone: str = Query(""),
 ):
     await websocket.accept()
 
@@ -40,6 +41,7 @@ async def lobby_websocket(
         name=name,
         language=language,
         websocket=websocket,
+        phone=phone,
     )
     lobby_manager.register(user)
 
@@ -115,8 +117,49 @@ async def lobby_websocket(
                     },
                 })
 
+            elif msg_type == "call_by_phone":
+                target_phone = data.get("target_phone", "")
+                sm = _session_manager
+                if not target_phone or not sm:
+                    await websocket.send_json({
+                        "type": "call_initiated",
+                        "data": {"target_found": False, "session_id": "", "participant_id": "", "target_user_id": ""},
+                    })
+                    continue
+
+                target = lobby_manager.get_user_by_phone(target_phone)
+                if not target:
+                    await websocket.send_json({
+                        "type": "call_initiated",
+                        "data": {"target_found": False, "session_id": "", "participant_id": "", "target_user_id": ""},
+                    })
+                    continue
+
+                participant = Participant(name=user.name, language=user.language)
+                session = Session(name=f"Call: {user.name}", domain="general")
+                session = await sm.create_session(session)
+                session = await sm.add_participant(session.id, participant)
+
+                await lobby_manager.send_to(target.user_id, {
+                    "type": "incoming_call",
+                    "data": {
+                        "caller_id": user_id,
+                        "caller_name": user.name,
+                        "caller_language": user.language,
+                        "session_id": session.id,
+                    },
+                })
+                await websocket.send_json({
+                    "type": "call_initiated",
+                    "data": {
+                        "session_id": session.id,
+                        "participant_id": participant.id,
+                        "target_user_id": target.user_id,
+                        "target_found": True,
+                    },
+                })
+
             elif msg_type == "call_rejected":
-                # Notify caller their call was rejected
                 caller_id = data.get("caller_id")
                 if caller_id:
                     await lobby_manager.send_to(caller_id, {
