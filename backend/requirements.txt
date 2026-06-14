@@ -16,3 +16,4 @@ twilio==9.3.7
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 structlog==24.4.0
+firebase-admin==6.6.0

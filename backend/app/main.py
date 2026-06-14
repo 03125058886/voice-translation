@@ -10,7 +10,7 @@ from app.config import settings
 from app.core.session_manager import SessionManager
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
-from app.routers import sessions, calls, ws as ws_router, lobby as lobby_router, chat as chat_router, users as users_router
+from app.routers import sessions, calls, ws as ws_router, lobby as lobby_router, chat as chat_router, users as users_router, dm as dm_router
 from app.core.database import init_db, close_db
 
 logging.basicConfig(
@@ -67,6 +67,7 @@ app.include_router(calls.router, prefix="/api/telephony", tags=["Telephony"])
 app.include_router(ws_router.router, tags=["WebSocket"])
 app.include_router(lobby_router.router, tags=["Lobby"])
 app.include_router(chat_router.router, prefix="/api/sessions", tags=["Chat"])
+app.include_router(dm_router.router, prefix="/api/dm", tags=["DirectMessages"])
 
 # Serve uploaded files
 _upload_dir = Path("/app/uploads")

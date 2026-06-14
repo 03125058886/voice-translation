@@ -8,9 +8,11 @@ import '../providers/auth_provider.dart';
 import '../providers/call_provider.dart';
 import '../services/api_service.dart';
 import '../services/lobby_service.dart';
+import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/language_selector.dart';
 import 'call_screen.dart';
+import 'chat_list_screen.dart';
 import 'join_screen.dart';
 
 const _domains = [
@@ -64,6 +66,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _tab.addListener(_onTabChange);
     _nameCtrl.addListener(_onNameChange);
     _setupLobbyCallbacks();
+    _setupFcmCallbacks();
     // Auto-connect lobby if name already provided from profile
     if (widget.initialName.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -83,12 +86,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   void dispose() {
+    NotificationService.onIncomingCallData = null;
     _tab.dispose();
     _nameCtrl.dispose();
     _targetPhoneCtrl.dispose();
     _lobbyConnectDebounce?.cancel();
     _lobby.disconnect();
     super.dispose();
+  }
+
+  void _setupFcmCallbacks() {
+    NotificationService.onIncomingCallData = (data) {
+      if (!mounted) return;
+      final call = IncomingCall(
+        callerId: data['caller_id'] ?? '',
+        callerName: data['caller_name'] ?? 'Unknown',
+        callerLanguage: data['caller_language'] ?? 'en',
+        sessionId: data['session_id'] ?? '',
+      );
+      setState(() => _incomingCall = call);
+    };
   }
 
   void _setupLobbyCallbacks() {
@@ -513,7 +530,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
           ),
         ],
-        const SizedBox(height: 16),
+        const SizedBox(height: 20),
+        // Action buttons — call + message
+        _buildActionButtons(),
+        const SizedBox(height: 20),
         // Language selector (user can change their own language)
         LanguageSelector(
           value: profile?.language ?? _language,
@@ -529,8 +549,75 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         const Text('CONVERSATION DOMAIN', style: TextStyle(color: AppColors.surface400, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.8)),
         const SizedBox(height: 8),
         _domainGrid(),
-        const SizedBox(height: 20),
-        _primaryButton('Start Call', _createSession),
+      ],
+    );
+  }
+
+  Widget _buildActionButtons() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        // Call button
+        Column(
+          children: [
+            GestureDetector(
+              onTap: _loading ? null : _createSession,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: _loading
+                      ? AppColors.bg600
+                      : const Color(0xFF25D366),
+                  shape: BoxShape.circle,
+                  boxShadow: _loading
+                      ? null
+                      : [
+                          BoxShadow(
+                            color: const Color(0xFF25D366).withOpacity(0.4),
+                            blurRadius: 16,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                ),
+                child: _loading
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.call_rounded, color: Colors.white, size: 28),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text('Voice Call', style: TextStyle(color: AppColors.surface400, fontSize: 12, fontWeight: FontWeight.w500)),
+          ],
+        ),
+        const SizedBox(width: 48),
+        // Message button
+        Column(
+          children: [
+            GestureDetector(
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ChatListScreen())),
+              child: Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: AppColors.bg800,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: AppColors.bg600, width: 1.5),
+                ),
+                child: const Icon(Icons.chat_bubble_rounded, color: AppColors.brand400, size: 26),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text('Message', style: TextStyle(color: AppColors.surface400, fontSize: 12, fontWeight: FontWeight.w500)),
+          ],
+        ),
       ],
     );
   }
@@ -836,6 +923,7 @@ class _IncomingCallOverlay extends StatefulWidget {
 class _IncomingCallOverlayState extends State<_IncomingCallOverlay>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ring;
+  Timer? _vibrateTimer;
 
   @override
   void initState() {
@@ -844,10 +932,19 @@ class _IncomingCallOverlayState extends State<_IncomingCallOverlay>
       vsync: this,
       duration: const Duration(milliseconds: 1000),
     )..repeat();
+
+    // Vibrate + alert sound on every ring cycle
+    HapticFeedback.vibrate();
+    SystemSound.play(SystemSoundType.alert);
+    _vibrateTimer = Timer.periodic(const Duration(milliseconds: 1200), (_) {
+      HapticFeedback.vibrate();
+      SystemSound.play(SystemSoundType.alert);
+    });
   }
 
   @override
   void dispose() {
+    _vibrateTimer?.cancel();
     _ring.dispose();
     super.dispose();
   }

@@ -25,7 +25,9 @@ class ApiService {
     required String name,
     required String language,
     String? fcmToken,
+    String? fcm_token,
   }) async {
+    fcmToken ??= fcm_token;
     try {
       await _client.post(
         Uri.parse('$_base/api/users/register'),
@@ -209,6 +211,43 @@ class ApiService {
     _checkStatus(res);
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     return '$_base${data['audio_url'] as String}';
+  }
+
+  static Future<Map<String, dynamic>> sendDirectMessage({
+    required String senderPhone,
+    required String receiverPhone,
+    required String content,
+  }) async {
+    final res = await _client.post(
+      Uri.parse('$_base/api/dm/send'),
+      headers: _headers,
+      body: jsonEncode({
+        'sender_phone': senderPhone,
+        'receiver_phone': receiverPhone,
+        'content': content,
+      }),
+    );
+    _checkStatus(res);
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  static Future<List<Map<String, dynamic>>> getDirectMessages({
+    required String me,
+    required String other,
+  }) async {
+    final uri = Uri.parse('$_base/api/dm/conversation?me=${Uri.encodeComponent(me)}&other=${Uri.encodeComponent(other)}');
+    final res = await _client.get(uri, headers: _headers);
+    _checkStatus(res);
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return List<Map<String, dynamic>>.from(data['messages'] as List);
+  }
+
+  static Future<List<Map<String, dynamic>>> getConversations(String phone) async {
+    final uri = Uri.parse('$_base/api/dm/conversations/${Uri.encodeComponent(phone)}');
+    final res = await _client.get(uri, headers: _headers);
+    _checkStatus(res);
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return List<Map<String, dynamic>>.from(data['conversations'] as List);
   }
 
   static Future<List<Map<String, dynamic>>> listLanguages() async {

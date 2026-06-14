@@ -31,13 +31,13 @@ class AudioService {
       avAudioSessionCategoryOptions:
           AVAudioSessionCategoryOptions.allowBluetooth |
           AVAudioSessionCategoryOptions.defaultToSpeaker,
-      avAudioSessionMode: AVAudioSessionMode.voiceChat,
+      avAudioSessionMode: AVAudioSessionMode.spokenAudio,
       androidAudioAttributes: AndroidAudioAttributes(
         contentType: AndroidAudioContentType.speech,
-        flags: AndroidAudioFlags.none,
-        usage: AndroidAudioUsage.voiceCommunication,
+        flags: AndroidAudioFlags.audibilityEnforced,
+        usage: AndroidAudioUsage.assistant,
       ),
-      androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+      androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransientMayDuck,
       androidWillPauseWhenDucked: false,
     ));
   }

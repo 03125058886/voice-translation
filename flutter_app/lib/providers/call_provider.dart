@@ -148,9 +148,10 @@ class CallNotifier extends StateNotifier<CallState> {
   void _onParticipantLeft(Map<String, dynamic> msg) {
     state = state.copyWith(
       clearOtherParticipant: true,
-      status: SessionStatus.waiting,
+      status: SessionStatus.ended,
       otherPipelineStage: PipelineStage.idle,
       partialText: '',
+      remoteEnded: true,
     );
   }
 

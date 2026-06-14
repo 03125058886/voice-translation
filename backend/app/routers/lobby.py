@@ -6,6 +6,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from app.core.lobby_manager import lobby_manager, OnlineUser
 from app.core.session_manager import SessionManager
 from app.models.session import Session, Participant, SessionStatus
+from app.core.database import get_user
+from app.services.fcm_service import send_incoming_call
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -127,35 +129,47 @@ async def lobby_websocket(
                     })
                     continue
 
-                target = lobby_manager.get_user_by_phone(target_phone)
-                if not target:
-                    await websocket.send_json({
-                        "type": "call_initiated",
-                        "data": {"target_found": False, "session_id": "", "participant_id": "", "target_user_id": ""},
-                    })
-                    continue
-
+                # Create session first
                 participant = Participant(name=user.name, language=user.language)
                 session = Session(name=f"Call: {user.name}", domain="general")
                 session = await sm.create_session(session)
                 session = await sm.add_participant(session.id, participant)
 
-                await lobby_manager.send_to(target.user_id, {
-                    "type": "incoming_call",
-                    "data": {
-                        "caller_id": user_id,
-                        "caller_name": user.name,
-                        "caller_language": user.language,
-                        "session_id": session.id,
-                    },
-                })
+                target = lobby_manager.get_user_by_phone(target_phone)
+                target_found = False
+
+                if target:
+                    # User is online — send via WebSocket
+                    sent = await lobby_manager.send_to(target.user_id, {
+                        "type": "incoming_call",
+                        "data": {
+                            "caller_id": user_id,
+                            "caller_name": user.name,
+                            "caller_language": user.language,
+                            "session_id": session.id,
+                        },
+                    })
+                    target_found = sent
+                else:
+                    # User offline — send FCM push notification
+                    db_user = await get_user(target_phone)
+                    if db_user and db_user.get("fcm_token"):
+                        fcm_sent = await send_incoming_call(
+                            fcm_token=db_user["fcm_token"],
+                            caller_name=user.name,
+                            caller_language=user.language,
+                            caller_id=user_id,
+                            session_id=session.id,
+                        )
+                        target_found = fcm_sent
+
                 await websocket.send_json({
                     "type": "call_initiated",
                     "data": {
                         "session_id": session.id,
                         "participant_id": participant.id,
-                        "target_user_id": target.user_id,
-                        "target_found": True,
+                        "target_user_id": target.user_id if target else "",
+                        "target_found": target_found,
                     },
                 })
 

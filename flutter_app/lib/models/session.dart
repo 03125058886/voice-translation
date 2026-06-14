@@ -75,6 +75,7 @@ class CallState {
   final List<Participant> participants;
   final String partialText;
   final List<ChatMessage> chatMessages;
+  final bool remoteEnded;
 
   const CallState({
     this.sessionId,
@@ -94,6 +95,7 @@ class CallState {
     this.participants = const [],
     this.partialText = '',
     this.chatMessages = const [],
+    this.remoteEnded = false,
   });
 
   // clearOtherParticipant: explicitly set otherName/otherLanguage to null
@@ -116,6 +118,7 @@ class CallState {
     List<Participant>? participants,
     String? partialText,
     List<ChatMessage>? chatMessages,
+    bool? remoteEnded,
   }) =>
       CallState(
         sessionId: sessionId ?? this.sessionId,
@@ -135,6 +138,7 @@ class CallState {
         participants: participants ?? this.participants,
         partialText: partialText ?? this.partialText,
         chatMessages: chatMessages ?? this.chatMessages,
+        remoteEnded: remoteEnded ?? this.remoteEnded,
       );
 }
 

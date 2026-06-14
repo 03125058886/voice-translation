@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_profile.dart';
+import '../services/notification_service.dart';
+import '../services/api_service.dart';
 
 final authProvider =
     StateNotifierProvider<AuthNotifier, UserProfile?>((ref) => AuthNotifier());
@@ -36,6 +38,22 @@ class AuthNotifier extends StateNotifier<UserProfile?> {
     await prefs.setString(_kLang, profile.language);
     await prefs.setString(_kPhone, profile.phone);
     state = profile;
+    // Save FCM token to backend
+    _registerFcmToken(profile);
+  }
+
+  Future<void> _registerFcmToken(UserProfile profile) async {
+    try {
+      final token = await NotificationService.getToken();
+      if (token != null) {
+        await ApiService.registerUser(
+          phone: profile.phone,
+          name: profile.name,
+          language: profile.language,
+          fcmToken: token,
+        );
+      }
+    } catch (_) {}
   }
 
   /// Step 1: Send OTP to phone number

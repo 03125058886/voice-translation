@@ -10,6 +10,9 @@ import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/chat_panel.dart';
 
+// Keep screen on during calls
+import 'package:flutter/services.dart' show SystemChrome;
+
 class CallScreen extends ConsumerStatefulWidget {
   const CallScreen({super.key});
 
@@ -23,8 +26,9 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   @override
   void initState() {
     super.initState();
+    // Keep screen on during call
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: SystemUiOverlay.values);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // Ensure mic capture is running (joiner may arrive here without it started)
       final st = ref.read(callProvider);
       if (!st.isCapturing) {
         try {
@@ -65,6 +69,24 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(callProvider);
+
+    // Auto-navigate back when remote party ends the call
+    if (state.remoteEnded) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        await ref.read(callProvider.notifier).endCall();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Call ended by the other person'),
+              backgroundColor: AppColors.bg700,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          Navigator.of(context).pop();
+        }
+      });
+    }
 
     // Auto-scroll when new content arrives
     final feedLength = state.transcript.length + state.chatMessages.length;

@@ -40,6 +40,18 @@ async def init_db():
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_sess
                     ON chat_messages(session_id, created_at);
+                CREATE TABLE IF NOT EXISTS direct_messages (
+                    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    sender_phone    TEXT NOT NULL,
+                    receiver_phone  TEXT NOT NULL,
+                    content         TEXT NOT NULL,
+                    is_read         BOOLEAN DEFAULT FALSE,
+                    created_at      TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_dm_pair
+                    ON direct_messages(sender_phone, receiver_phone, created_at);
+                CREATE INDEX IF NOT EXISTS idx_dm_receiver
+                    ON direct_messages(receiver_phone, created_at);
             """)
         logger.info("Database initialized")
     except Exception as e:
@@ -190,3 +202,108 @@ async def get_messages(session_id: str, limit: int = 100) -> list[dict]:
             }
             for r in rows
         ]
+
+
+async def save_direct_message(sender_phone: str, receiver_phone: str, content: str) -> dict | None:
+    pool = get_pool()
+    if not pool:
+        return None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO direct_messages (sender_phone, receiver_phone, content)
+            VALUES ($1, $2, $3)
+            RETURNING id, sender_phone, receiver_phone, content, is_read, created_at
+            """,
+            sender_phone, receiver_phone, content,
+        )
+        if row:
+            return {
+                "id": str(row["id"]),
+                "sender_phone": row["sender_phone"],
+                "receiver_phone": row["receiver_phone"],
+                "content": row["content"],
+                "is_read": row["is_read"],
+                "created_at": row["created_at"].isoformat(),
+            }
+    return None
+
+
+async def get_direct_messages(me: str, other: str, limit: int = 100) -> list[dict]:
+    pool = get_pool()
+    if not pool:
+        return []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, sender_phone, receiver_phone, content, is_read, created_at
+            FROM direct_messages
+            WHERE (sender_phone = $1 AND receiver_phone = $2)
+               OR (sender_phone = $2 AND receiver_phone = $1)
+            ORDER BY created_at ASC
+            LIMIT $3
+            """,
+            me, other, limit,
+        )
+        # Mark messages to me as read
+        await conn.execute(
+            "UPDATE direct_messages SET is_read = TRUE WHERE receiver_phone = $1 AND sender_phone = $2 AND is_read = FALSE",
+            me, other,
+        )
+        return [
+            {
+                "id": str(r["id"]),
+                "sender_phone": r["sender_phone"],
+                "receiver_phone": r["receiver_phone"],
+                "content": r["content"],
+                "is_read": r["is_read"],
+                "created_at": r["created_at"].isoformat(),
+            }
+            for r in rows
+        ]
+
+
+async def get_conversations(phone: str) -> list[dict]:
+    """Return last message for each unique conversation partner."""
+    pool = get_pool()
+    if not pool:
+        return []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (other_phone)
+                other_phone,
+                content AS last_message,
+                created_at,
+                unread_count
+            FROM (
+                SELECT
+                    CASE WHEN sender_phone = $1 THEN receiver_phone ELSE sender_phone END AS other_phone,
+                    content,
+                    created_at,
+                    (SELECT COUNT(*) FROM direct_messages d2
+                     WHERE d2.receiver_phone = $1
+                       AND d2.sender_phone = CASE WHEN dm.sender_phone = $1 THEN dm.receiver_phone ELSE dm.sender_phone END
+                       AND d2.is_read = FALSE) AS unread_count
+                FROM direct_messages dm
+                WHERE sender_phone = $1 OR receiver_phone = $1
+                ORDER BY created_at DESC
+            ) sub
+            ORDER BY other_phone, created_at DESC
+            """,
+            phone,
+        )
+        # Get user info for each partner
+        result = []
+        for r in rows:
+            user = await get_user(r["other_phone"])
+            result.append({
+                "other_phone": r["other_phone"],
+                "other_name": user["name"] if user else r["other_phone"],
+                "other_language": user["language"] if user else "en",
+                "last_message": r["last_message"],
+                "created_at": r["created_at"].isoformat(),
+                "unread_count": r["unread_count"],
+            })
+        result.sort(key=lambda x: x["created_at"], reverse=True)
+        return result
