@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "547335939002",
+    "project_id": "voicetranslate-2315a",
+    "storage_bucket": "voicetranslate-2315a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:547335939002:android:d40d76632b25182b6bf383",
+        "android_client_info": {
+          "package_name": "com.example.voice_translation"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "547335939002-d095pt001hqrkh5vgpmhnoaindhn7e8p.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.voice_translation",
+            "certificate_hash": "40992d267bfee91ac848643b2e828821a789981f"
+          }
+        },
+        {
+          "client_id": "547335939002-4sgg8ndiba1l6787k24ip47pcpb4lv02.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCGYwyhxF9qIANEYcZk8nMzXYyAMgBxiL0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "547335939002-4sgg8ndiba1l6787k24ip47pcpb4lv02.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
