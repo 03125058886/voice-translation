@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'api_service.dart';
@@ -123,9 +125,23 @@ class NotificationService {
     }
   }
 
+  static const _batteryChannel = MethodChannel('com.example.voice_translation/audio');
+
+  /// Ask Android to stop killing the app in the background, so incoming
+  /// calls keep ringing the way they do on WhatsApp.
+  static Future<void> requestBackgroundReliability() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _batteryChannel.invokeMethod('requestIgnoreBatteryOptimizations');
+    } catch (e) {
+      debugPrint('[NotificationService] battery optimization request failed: $e');
+    }
+  }
+
   static Future<void> initialize() async {
     await _fcm.requestPermission(alert: true, badge: true, sound: true);
     await ensureLocalNotificationsReady();
+    await requestBackgroundReliability();
 
     FirebaseMessaging.onMessage.listen((message) {
       final data = message.data;

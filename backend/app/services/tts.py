@@ -55,10 +55,13 @@ class TTSService:
         if not text.strip():
             return TTSResult(audio_bytes=b"", format="mp3", sample_rate=24000)
 
-        if self.provider == "elevenlabs" and settings.ELEVENLABS_API_KEY:
-            return await self._elevenlabs_tts(text, language, voice_override)
-        if self.provider == "openai" and self.openai_client:
-            return await self._openai_tts(text, language, voice_override)
+        try:
+            if self.provider == "elevenlabs" and settings.ELEVENLABS_API_KEY:
+                return await self._elevenlabs_tts(text, language, voice_override)
+            if self.provider == "openai" and self.openai_client:
+                return await self._openai_tts(text, language, voice_override)
+        except Exception as e:
+            logger.warning(f"{self.provider} TTS failed ({e}), falling back to Edge/gTTS")
         return await self._edge_tts_with_fallback(text, language, voice_override)
 
     async def _edge_tts_with_fallback(

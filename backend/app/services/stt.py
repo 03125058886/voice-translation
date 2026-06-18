@@ -5,6 +5,7 @@ import wave
 import logging
 from typing import Optional
 from groq import AsyncGroq
+from openai import AsyncOpenAI
 
 from app.config import settings
 from app.models.translation import STTResult
@@ -16,6 +17,9 @@ class STTService:
     def __init__(self):
         self.client = AsyncGroq(api_key=settings.GROQ_API_KEY)
         self.model = settings.GROQ_STT_MODEL
+        self.fallback_client = (
+            AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
+        )
 
     def _pcm_to_wav(self, pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
         buf = io.BytesIO()
@@ -34,40 +38,48 @@ class STTService:
         is_pcm: bool = True,
     ) -> STTResult:
         start = time.monotonic()
+        if is_pcm:
+            audio_bytes = self._pcm_to_wav(audio_bytes)
+
         try:
-            if is_pcm:
-                audio_bytes = self._pcm_to_wav(audio_bytes)
-
-            params = {
-                "file": ("audio.wav", audio_bytes, "audio/wav"),
-                "model": self.model,
-                "response_format": "verbose_json",
-                "temperature": 0.0,
-            }
-            if language:
-                params["language"] = language
-            if prompt:
-                params["prompt"] = prompt
-
-            response = await self.client.audio.transcriptions.create(**params)
-
-            duration_ms = int((time.monotonic() - start) * 1000)
-            text = response.text.strip()
-            detected_lang = getattr(response, "language", language)
-
-            logger.info(f"STT (Groq): '{text[:80]}' | lang={detected_lang} | {duration_ms}ms")
-
-            return STTResult(
-                text=text,
-                language=detected_lang or language,
-                confidence=None,
-                is_final=True,
-                duration_ms=duration_ms,
+            return await self._transcribe_with(
+                self.client, self.model, audio_bytes, language, prompt, start, "Groq"
+            )
+        except Exception as e:
+            logger.warning(f"Groq STT failed ({e}), falling back to OpenAI Whisper")
+            if not self.fallback_client:
+                raise
+            return await self._transcribe_with(
+                self.fallback_client, settings.OPENAI_STT_MODEL, audio_bytes, language, prompt, start, "OpenAI"
             )
 
-        except Exception as e:
-            logger.error(f"STT error: {e}")
-            raise
+    async def _transcribe_with(self, client, model, audio_bytes, language, prompt, start, label) -> STTResult:
+        params = {
+            "file": ("audio.wav", audio_bytes, "audio/wav"),
+            "model": model,
+            "response_format": "verbose_json",
+            "temperature": 0.0,
+        }
+        if language:
+            params["language"] = language
+        if prompt:
+            params["prompt"] = prompt
+
+        response = await client.audio.transcriptions.create(**params)
+
+        duration_ms = int((time.monotonic() - start) * 1000)
+        text = response.text.strip()
+        detected_lang = getattr(response, "language", language)
+
+        logger.info(f"STT ({label}): '{text[:80]}' | lang={detected_lang} | {duration_ms}ms")
+
+        return STTResult(
+            text=text,
+            language=detected_lang or language,
+            confidence=None,
+            is_final=True,
+            duration_ms=duration_ms,
+        )
 
     async def transcribe_stream(
         self,

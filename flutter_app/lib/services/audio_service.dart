@@ -120,24 +120,20 @@ class AudioService {
       await _playSub?.cancel();
       if (_player.playing) await _player.stop();
 
-      // Same approach as web frontend — data URI playback.
-      final mime = format == 'mpeg' ? 'mp3' : format;
-      final uri = Uri.parse('data:audio/$mime;base64,$base64Audio');
-      try {
-        await _player.setAudioSource(AudioSource.uri(uri));
-      } catch (_) {
-        // Fallback: write temp file if data URI unsupported on device.
-        final bytes = base64Decode(base64Audio);
-        final dir = await getTemporaryDirectory();
-        final file = File('${dir.path}/${_uuid.v4()}.$format');
-        await file.writeAsBytes(bytes, flush: true);
-        await _player.setFilePath(file.path);
-        _playSub = _player.playerStateStream.listen((state) {
-          if (state.processingState == ProcessingState.completed) {
-            file.delete().ignore();
-          }
-        });
-      }
+      // data: URIs are not reliably supported by ExoPlayer (just_audio on
+      // Android) — failures happen asynchronously after setAudioSource
+      // resolves, so a try/catch around it doesn't catch them. Write a temp
+      // file instead; this is the path that reliably plays on-device.
+      final bytes = base64Decode(base64Audio);
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/${_uuid.v4()}.$format');
+      await file.writeAsBytes(bytes, flush: true);
+      await _player.setFilePath(file.path);
+      _playSub = _player.playerStateStream.listen((state) {
+        if (state.processingState == ProcessingState.completed) {
+          file.delete().ignore();
+        }
+      });
 
       await _player.setVolume(1.0);
       await _player.play();
