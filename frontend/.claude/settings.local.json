@@ -52,7 +52,24 @@
       "PowerShell(keytool -list -v -keystore \"$env:USERPROFILE\\\\.android\\\\debug.keystore\" -alias androiddebugkey -storepass android -keypass android 2>$null | Select-String \"SHA1\")",
       "PowerShell(& \"C:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\\\\bin\\\\keytool.exe\" -list -v -keystore \"$env:USERPROFILE\\\\.android\\\\debug.keystore\" -alias androiddebugkey -storepass android -keypass android 2>$null | Select-String \"SHA1\")",
       "WebFetch(domain:voice-translation-production.up.railway.app)",
-      "PowerShell(Get-Item \"C:\\\\Users\\\\Farhan Zahid\\\\voice-translation-platform\\\\flutter_app\\\\build\\\\app\\\\outputs\\\\flutter-apk\\\\app-release.apk\" -ErrorAction SilentlyContinue | Select-Object Name, LastWriteTime, @{N='SizeMB';E={[math]::Round\\($_.Length/1MB,1\\)}})"
+      "PowerShell(Get-Item \"C:\\\\Users\\\\Farhan Zahid\\\\voice-translation-platform\\\\flutter_app\\\\build\\\\app\\\\outputs\\\\flutter-apk\\\\app-release.apk\" -ErrorAction SilentlyContinue | Select-Object Name, LastWriteTime, @{N='SizeMB';E={[math]::Round\\($_.Length/1MB,1\\)}})",
+      "Bash(C:\\\\flutter\\\\bin\\\\flutter.bat build *)",
+      "PowerShell(cd \"C:\\\\Users\\\\Farhan Zahid\\\\voice-translation-platform\\\\flutter_app\"; Start-Process -NoNewWindow -FilePath \"C:\\\\flutter\\\\bin\\\\flutter.bat\" -ArgumentList \"build\",\"apk\",\"--release\" -RedirectStandardOutput \"$env:TEMP\\\\flutter_build.txt\" -RedirectStandardError \"$env:TEMP\\\\flutter_build_err.txt\" -PassThru | Select-Object Id)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "PowerShell(Copy-Item *)",
+      "PowerShell(cd \"C:\\\\Users\\\\Farhan Zahid\\\\voice-translation-platform\\\\flutter_app\"; Start-Process -NoNewWindow -FilePath \"C:\\\\flutter\\\\bin\\\\flutter.bat\" -ArgumentList \"build\",\"apk\",\"--release\" -RedirectStandardOutput \"$env:TEMP\\\\flutter_build2.txt\" -RedirectStandardError \"$env:TEMP\\\\flutter_build2_err.txt\" -PassThru | Select-Object Id)",
+      "PowerShell(cd \"C:\\\\Users\\\\Farhan Zahid\\\\voice-translation-platform\\\\flutter_app\"; Start-Process -NoNewWindow -FilePath \"C:\\\\flutter\\\\bin\\\\flutter.bat\" -ArgumentList \"build\",\"apk\",\"--release\" -RedirectStandardOutput \"$env:TEMP\\\\flutter_build3.txt\" -RedirectStandardError \"$env:TEMP\\\\flutter_build3_err.txt\" -PassThru | Select-Object Id)",
+      "Bash(flutter analyze *)",
+      "Bash(python -m py_compile app/core/database.py app/routers/dm.py app/routers/chat.py)",
+      "Bash(cat backend/Dockerfile)",
+      "Bash(cat backend/railway.json)",
+      "Bash(cat backend/railway.toml)",
+      "Bash(find . -maxdepth 2 -iname \"railway*\" -o -iname \"Dockerfile*\")",
+      "Bash(command -v railway)",
+      "Bash(railway --version)",
+      "Bash(railway status *)"
     ]
   }
 }

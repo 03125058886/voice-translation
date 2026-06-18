@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/session.dart';
 import '../providers/auth_provider.dart';
@@ -12,17 +11,8 @@ import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/language_selector.dart';
 import 'call_screen.dart';
-import 'chat_list_screen.dart';
+import 'direct_chat_screen.dart';
 import 'join_screen.dart';
-
-const _domains = [
-  ('general', 'General', '💬'),
-  ('medical', 'Medical', '🏥'),
-  ('legal', 'Legal', '⚖️'),
-  ('business', 'Business', '💼'),
-  ('travel', 'Travel', '✈️'),
-  ('customer_support', 'Support', '🎧'),
-];
 
 class HomeScreen extends ConsumerStatefulWidget {
   final String initialName;
@@ -40,39 +30,37 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tab;
-  late final TextEditingController _nameCtrl;
-  final _targetPhoneCtrl = TextEditingController();
+class _HomeScreenState extends ConsumerState<HomeScreen> {
+  int _navIndex = 0;
   late String _language;
-  String _domain = 'general';
   bool _loading = false;
-  Map<String, dynamic>? _targetUser; // found user by phone
+  String _loadingMessage = '';
 
   // Lobby
   final _lobby = LobbyService();
   List<OnlineUser> _onlineUsers = [];
   bool _lobbyConnected = false;
   IncomingCall? _incomingCall;
-  Timer? _lobbyConnectDebounce;
   Timer? _callTimeoutTimer;
-  String _loadingMessage = '';
+
+  // Chats tab state
+  List<Map<String, dynamic>> _conversations = [];
+  bool _convsLoading = true;
+  final _searchCtrl = TextEditingController();
+  String _searchQuery = '';
+
+  // Calls tab state
+  final _phoneCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    _nameCtrl = TextEditingController(text: widget.initialName);
     _language = widget.initialLanguage;
-    _tab = TabController(length: 2, vsync: this);
-    _tab.addListener(_onTabChange);
-    _nameCtrl.addListener(_onNameChange);
     _setupLobbyCallbacks();
     _setupFcmCallbacks();
-    // Auto-connect lobby if name already provided from profile
+
     if (widget.initialName.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
-        // Register user on backend so others can find them by phone
         final profile = ref.read(authProvider);
         if (profile != null) {
           await ApiService.registerUser(
@@ -82,26 +70,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           );
         }
         _connectLobby(widget.initialName, widget.initialLanguage, phone: profile?.phone);
+        _loadConversations();
       });
+    } else {
+      _convsLoading = false;
     }
+
+    _searchCtrl.addListener(() => setState(() => _searchQuery = _searchCtrl.text.toLowerCase()));
   }
 
   @override
   void dispose() {
     NotificationService.onIncomingCallData = null;
-    _tab.dispose();
-    _nameCtrl.dispose();
-    _targetPhoneCtrl.dispose();
-    _lobbyConnectDebounce?.cancel();
+    _searchCtrl.dispose();
+    _phoneCtrl.dispose();
     _callTimeoutTimer?.cancel();
     _lobby.disconnect();
     super.dispose();
   }
 
+  // ── FCM ──────────────────────────────────────────────────────────────────
+
   void _setupFcmCallbacks() {
     NotificationService.onIncomingCallData = _handleFcmCallData;
-
-    // If app was opened by tapping a notification while terminated/background
     final pending = NotificationService.pendingCallData;
     if (pending != null) {
       NotificationService.pendingCallData = null;
@@ -111,14 +102,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   void _handleFcmCallData(Map<String, dynamic> data) {
     if (!mounted) return;
-    final call = IncomingCall(
+    setState(() => _incomingCall = IncomingCall(
       callerId: data['caller_id'] ?? '',
       callerName: data['caller_name'] ?? 'Unknown',
       callerLanguage: data['caller_language'] ?? 'en',
       sessionId: data['session_id'] ?? '',
-    );
-    setState(() => _incomingCall = call);
+    ));
   }
+
+  // ── Lobby ─────────────────────────────────────────────────────────────────
 
   void _setupLobbyCallbacks() {
     _lobby.onOnlineList = (users, myId) {
@@ -150,15 +142,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         return;
       }
 
-      // If target was online (lobby), go directly to call screen
-      // If target was offline (FCM sent), show "Ringing..." and wait
-      if (call.targetUserId.isNotEmpty) {
-        // Online — proceed immediately
+      final _goCall = () async {
         try {
           await ref.read(callProvider.notifier).enterAsHost(
             sessionId: call.sessionId,
             participantId: call.participantId,
-            name: _nameCtrl.text.trim(),
+            name: ref.read(authProvider)?.name ?? '',
             language: _language,
           );
           await ref.read(callProvider.notifier).startCapture();
@@ -169,33 +158,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         } finally {
           if (mounted) setState(() { _loading = false; _loadingMessage = ''; });
         }
+      };
+
+      if (call.targetUserId.isNotEmpty) {
+        await _goCall();
       } else {
-        // Offline — FCM sent. Show ringing state, wait for them to join
         if (mounted) setState(() => _loadingMessage = 'Ringing...');
         _callTimeoutTimer?.cancel();
         _callTimeoutTimer = Timer(const Duration(seconds: 30), () {
           if (mounted) {
             setState(() { _loading = false; _loadingMessage = ''; });
-            _toast('No answer — user may be unavailable');
+            _toast('No answer');
           }
         });
-        // Enter as host now so session is ready when B joins
-        try {
-          await ref.read(callProvider.notifier).enterAsHost(
-            sessionId: call.sessionId,
-            participantId: call.participantId,
-            name: _nameCtrl.text.trim(),
-            language: _language,
-          );
-          await ref.read(callProvider.notifier).startCapture();
-          if (!mounted) return;
-          _callTimeoutTimer?.cancel();
-          Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CallScreen()));
-        } catch (e) {
-          _toast(e.toString().replaceAll('Exception: ', ''));
-        } finally {
-          if (mounted) setState(() { _loading = false; _loadingMessage = ''; });
-        }
+        await _goCall();
+        _callTimeoutTimer?.cancel();
       }
     };
 
@@ -207,90 +184,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     };
   }
 
-  void _onTabChange() {
-    if (_tab.index == 1 && !_lobbyConnected) {
-      _maybeConnectLobby();
-    }
-  }
-
-  void _onNameChange() {
-    _lobbyConnectDebounce?.cancel();
-    _lobbyConnectDebounce = Timer(const Duration(milliseconds: 800), () {
-      if (_tab.index == 1 && !_lobbyConnected) {
-        _maybeConnectLobby();
-      }
-    });
-  }
-
-  void _maybeConnectLobby() {
-    final name = _nameCtrl.text.trim();
-    if (name.isEmpty) return;
-    _connectLobby(name, _language);
-  }
-
   Future<void> _connectLobby(String name, String language, {String? phone}) async {
-    if (_lobbyConnected) {
-      await _lobby.disconnect();
-    }
+    if (_lobbyConnected) await _lobby.disconnect();
     await _lobby.connect(name: name, language: language, phone: phone);
     if (mounted) setState(() => _lobbyConnected = _lobby.isConnected);
   }
 
-  Future<void> _createSession() async {
-    final profile = ref.read(authProvider);
-    if (profile == null) return;
+  // ── Conversations ─────────────────────────────────────────────────────────
 
-    final targetPhone = _targetPhoneCtrl.text.trim();
-
-    // If a phone number is entered, ring that person via lobby
-    if (targetPhone.isNotEmpty) {
-      final formatted = targetPhone.startsWith('+') ? targetPhone : '+92${targetPhone.replaceFirst(RegExp(r'^0'), '')}';
-
-      // Connect to lobby first (with phone) if not already connected
-      if (!_lobbyConnected) {
-        setState(() => _loading = true);
-        await _connectLobby(profile.name, profile.language, phone: profile.phone);
-        setState(() => _loading = false);
-      }
-
-      if (!_lobbyConnected) {
-        _toast('Could not connect to server. Check internet.');
-        return;
-      }
-
-      setState(() => _loading = true);
-      _lobby.callByPhone(formatted);
-      // _onCallInitiated callback handles the rest (same as callUser flow)
-      return;
-    }
-
-    // No phone number — open session (anyone can join by session ID)
-    setState(() => _loading = true);
+  Future<void> _loadConversations() async {
+    final phone = ref.read(authProvider)?.phone;
+    if (phone == null) { setState(() => _convsLoading = false); return; }
     try {
-      await ref.read(callProvider.notifier).createSession(
-        name: profile.name,
-        language: profile.language,
-        domain: _domain,
-        callerPhone: profile.phone,
-      );
-      if (!mounted) return;
-      await ref.read(callProvider.notifier).startCapture();
-      _goToCall();
-    } catch (e) {
-      _toast(e.toString().replaceAll('Exception: ', ''));
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      final convs = await ApiService.getConversations(phone);
+      if (mounted) setState(() { _conversations = convs; _convsLoading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _convsLoading = false);
     }
   }
 
-  void _callUser(OnlineUser target) {
-    final name = _nameCtrl.text.trim();
-    if (name.isEmpty) { _toast('Please enter your name first'); return; }
+  // ── Calling ───────────────────────────────────────────────────────────────
+
+  Future<void> _callByPhone(String rawPhone) async {
+    final profile = ref.read(authProvider);
+    if (profile == null) return;
+    final formatted = rawPhone.startsWith('+') ? rawPhone : '+92${rawPhone.replaceFirst(RegExp(r'^0'), '')}';
+
     if (!_lobbyConnected) {
-      _maybeConnectLobby();
-      _toast('Connecting… try again in a moment');
-      return;
+      setState(() => _loading = true);
+      await _connectLobby(profile.name, profile.language, phone: profile.phone);
+      if (!_lobbyConnected) {
+        setState(() => _loading = false);
+        _toast('Could not connect to server');
+        return;
+      }
     }
+
+    setState(() => _loading = true);
+    _lobby.callByPhone(formatted);
+  }
+
+  void _callOnlineUser(OnlineUser target) {
+    if (!_lobbyConnected) { _toast('Connecting…'); return; }
     setState(() => _loading = true);
     _lobby.callUser(target.userId);
   }
@@ -302,7 +237,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     try {
       await ref.read(callProvider.notifier).joinSession(
         sessionId: call.sessionId,
-        name: profile?.name ?? _nameCtrl.text.trim(),
+        name: profile?.name ?? '',
         language: profile?.language ?? _language,
         phone: profile?.phone,
       );
@@ -322,568 +257,550 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     setState(() => _incomingCall = null);
   }
 
-  void _goToCall() {
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CallScreen()));
-  }
-
-  void _openJoin() {
-    final profile = ref.read(authProvider);
-    final name = profile?.name ?? _nameCtrl.text.trim();
-    final language = profile?.language ?? _language;
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => JoinScreen(name: name, language: language)),
-    );
-  }
-
   void _toast(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: AppColors.bg700,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: AppColors.bg700,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ));
   }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
         Scaffold(
-          body: SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  const SizedBox(height: 24),
-                  _buildHero().animate().fadeIn(duration: 600.ms).slideY(begin: -0.1, end: 0),
-                  const SizedBox(height: 32),
-                  _buildChips().animate().fadeIn(delay: 200.ms, duration: 500.ms),
-                  const SizedBox(height: 32),
-                  _buildCard().animate().fadeIn(delay: 300.ms, duration: 500.ms).slideY(begin: 0.1, end: 0),
-                  const SizedBox(height: 32),
-                  _buildStats().animate().fadeIn(delay: 400.ms, duration: 500.ms),
-                  const SizedBox(height: 24),
-                ],
-              ),
-            ),
+          backgroundColor: AppColors.bg950,
+          appBar: _buildAppBar(),
+          body: _navIndex == 0 ? _buildChatsTab() : _buildCallsTab(),
+          bottomNavigationBar: _buildBottomNav(),
+          floatingActionButton: _navIndex == 0 ? _buildFab() : null,
+        ),
+        if (_incomingCall != null)
+          _IncomingCallOverlay(
+            call: _incomingCall!,
+            onAccept: () => _acceptCall(_incomingCall!),
+            onReject: () => _rejectCall(_incomingCall!),
           ),
-        ),
-        // Incoming call overlay
-        if (_incomingCall != null) _IncomingCallOverlay(
-          call: _incomingCall!,
-          onAccept: () => _acceptCall(_incomingCall!),
-          onReject: () => _rejectCall(_incomingCall!),
-        ),
       ],
     );
   }
 
-  Widget _buildHero() {
-    final name = _nameCtrl.text.trim();
-    final initial = name.isNotEmpty ? name[0].toUpperCase() : 'V';
-    return Column(
-      children: [
-        // Profile row
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Avatar
-            widget.photoUrl != null
-                ? CircleAvatar(
-                    radius: 22,
-                    backgroundImage: NetworkImage(widget.photoUrl!),
-                  )
-                : CircleAvatar(
-                    radius: 22,
-                    backgroundColor: AppColors.brand600.withOpacity(0.25),
-                    child: Text(initial,
-                        style: const TextStyle(
-                            color: AppColors.brand400,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold)),
-                  ),
-            const SizedBox(width: 10),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  name.isNotEmpty ? name : 'Voice Translate',
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-                ),
-                Consumer(builder: (_, ref, __) {
-                  final p = ref.watch(authProvider);
-                  return Text(
-                    p?.phone ?? '${languageFlag(_language)} ${languageName(_language)}',
-                    style: const TextStyle(color: AppColors.surface400, fontSize: 12),
-                  );
-                }),
-              ],
+  PreferredSizeWidget _buildAppBar() {
+    final profile = ref.read(authProvider);
+    final initial = (profile?.name ?? 'V').isNotEmpty ? (profile?.name ?? 'V')[0].toUpperCase() : 'V';
+
+    return AppBar(
+      backgroundColor: AppColors.bg900,
+      elevation: 0,
+      title: _navIndex == 0
+          ? Text(_searchQuery.isEmpty ? 'VoiceTranslate' : 'Search',
+              style: const TextStyle(color: AppColors.white, fontSize: 20, fontWeight: FontWeight.w700))
+          : const Text('Calls', style: TextStyle(color: AppColors.white, fontSize: 20, fontWeight: FontWeight.w700)),
+      actions: [
+        if (_navIndex == 0) ...[
+          IconButton(
+            icon: const Icon(Icons.search_rounded, color: AppColors.surface400),
+            onPressed: () => showSearch(context: context, delegate: _ChatSearchDelegate(_conversations, _openChat)),
+          ),
+        ],
+        // Profile / sign-out
+        GestureDetector(
+          onTap: () => _showProfileMenu(),
+          child: Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: CircleAvatar(
+              radius: 16,
+              backgroundColor: AppColors.brand600.withOpacity(0.25),
+              child: Text(initial, style: const TextStyle(color: AppColors.brand400, fontSize: 13, fontWeight: FontWeight.bold)),
             ),
-            const Spacer(),
-            // Sign out
-            GestureDetector(
-              onTap: () async {
-                final confirm = await showDialog<bool>(
-                  context: context,
-                  builder: (_) => AlertDialog(
-                    backgroundColor: AppColors.bg800,
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16)),
-                    title: const Text('Sign Out?'),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: const Text('Cancel',
-                            style: TextStyle(color: AppColors.surface400)),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        child: const Text('Sign Out',
-                            style: TextStyle(color: AppColors.red500)),
-                      ),
-                    ],
-                  ),
-                );
-                if (confirm == true && mounted) {
-                  await ref.read(authProvider.notifier).signOut();
+          ),
+        ),
+      ],
+      bottom: PreferredSize(preferredSize: const Size.fromHeight(1), child: Container(height: 1, color: AppColors.bg700)),
+    );
+  }
+
+  void _showProfileMenu() {
+    final profile = ref.read(authProvider);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.bg900,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircleAvatar(
+              radius: 32,
+              backgroundColor: AppColors.brand600.withOpacity(0.2),
+              child: Text(
+                (profile?.name ?? 'V').isNotEmpty ? (profile?.name ?? 'V')[0].toUpperCase() : 'V',
+                style: const TextStyle(color: AppColors.brand400, fontSize: 28, fontWeight: FontWeight.bold),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(profile?.name ?? '', style: const TextStyle(color: AppColors.white, fontSize: 18, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(profile?.phone ?? '', style: const TextStyle(color: AppColors.surface400, fontSize: 14)),
+            const SizedBox(height: 4),
+            Text('${languageFlag(profile?.language ?? 'en')} ${languageName(profile?.language ?? 'en')}',
+                style: const TextStyle(color: AppColors.surface400, fontSize: 13)),
+            const SizedBox(height: 24),
+            // Language selector
+            LanguageSelector(
+              value: profile?.language ?? _language,
+              onChanged: (v) async {
+                setState(() => _language = v);
+                if (profile != null) {
+                  await ref.read(authProvider.notifier).updateLanguage(v);
                 }
+                if (mounted) Navigator.pop(context);
               },
-              child: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: AppColors.bg800,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: AppColors.bg700),
+              label: 'Your Language',
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (_) => AlertDialog(
+                      backgroundColor: AppColors.bg800,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      title: const Text('Sign Out?'),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel', style: TextStyle(color: AppColors.surface400))),
+                        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sign Out', style: TextStyle(color: AppColors.red500))),
+                      ],
+                    ),
+                  );
+                  if (confirm == true && mounted) await ref.read(authProvider.notifier).signOut();
+                },
+                icon: const Icon(Icons.logout_rounded, size: 18),
+                label: const Text('Sign Out'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.red500,
+                  side: const BorderSide(color: AppColors.red500),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
-                child: const Icon(Icons.logout_rounded,
-                    color: AppColors.surface400, size: 18),
               ),
             ),
           ],
         ),
-        const SizedBox(height: 20),
-        const Text(
-          'Speak in any language.\nHeard in every language.',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-              fontSize: 24, fontWeight: FontWeight.w700, height: 1.3),
+      ),
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return BottomNavigationBar(
+      currentIndex: _navIndex,
+      onTap: (i) {
+        setState(() => _navIndex = i);
+        if (i == 0) _loadConversations();
+        if (i == 1 && !_lobbyConnected) {
+          final profile = ref.read(authProvider);
+          if (profile != null) _connectLobby(profile.name, profile.language, phone: profile.phone);
+        }
+      },
+      backgroundColor: AppColors.bg900,
+      selectedItemColor: AppColors.brand400,
+      unselectedItemColor: AppColors.surface400,
+      selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+      type: BottomNavigationBarType.fixed,
+      items: [
+        BottomNavigationBarItem(
+          icon: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              const Icon(Icons.chat_bubble_rounded),
+              if (_conversations.any((c) => (c['unread_count'] as num? ?? 0) > 0))
+                Positioned(
+                  right: -4, top: -2,
+                  child: Container(
+                    width: 8, height: 8,
+                    decoration: const BoxDecoration(color: AppColors.brand500, shape: BoxShape.circle),
+                  ),
+                ),
+            ],
+          ),
+          label: 'Chats',
         ),
-        const SizedBox(height: 8),
-        const Text(
-          'Real-time AI voice translation for natural\nmultilingual conversations.',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-              fontSize: 13, color: AppColors.surface400, height: 1.5),
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.call_rounded),
+          label: 'Calls',
         ),
       ],
     );
   }
 
-  Widget _buildChips() => Wrap(
-    alignment: WrapAlignment.center,
-    spacing: 8, runSpacing: 8,
-    children: ['20 Languages', 'Sub-2s Latency', 'Context-Aware', 'Healthcare Ready']
-        .map((f) => Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: AppColors.bg800,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: AppColors.bg700),
-              ),
-              child: Text(f, style: const TextStyle(fontSize: 12, color: AppColors.surface400)),
-            ))
-        .toList(),
-  );
+  Widget _buildFab() {
+    return FloatingActionButton(
+      onPressed: _showNewChatDialog,
+      backgroundColor: AppColors.brand600,
+      child: const Icon(Icons.chat_rounded, color: Colors.white),
+    );
+  }
 
-  Widget _buildCard() {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.bg900,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.bg700),
-      ),
-      child: Column(
-        children: [
-          Container(
-            margin: const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-              color: AppColors.bg800,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: TabBar(
-              controller: _tab,
-              indicator: BoxDecoration(
-                color: AppColors.brand600,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              indicatorSize: TabBarIndicatorSize.tab,
-              dividerColor: Colors.transparent,
-              labelColor: AppColors.white,
-              unselectedLabelColor: AppColors.surface400,
-              labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-              tabs: const [Tab(text: 'New Call'), Tab(text: 'Join Call')],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: AnimatedBuilder(
-              animation: _tab,
-              builder: (_, __) => _tab.index == 0 ? _buildCreateForm() : _buildJoinForm(),
-            ),
-          ),
-        ],
+  // ── Chats Tab ─────────────────────────────────────────────────────────────
+
+  Widget _buildChatsTab() {
+    if (_convsLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    final filtered = _searchQuery.isEmpty
+        ? _conversations
+        : _conversations.where((c) {
+            final name = (c['other_name'] as String? ?? '').toLowerCase();
+            final phone = (c['other_phone'] as String? ?? '').toLowerCase();
+            return name.contains(_searchQuery) || phone.contains(_searchQuery);
+          }).toList();
+
+    if (_conversations.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.chat_bubble_outline_rounded, size: 64, color: AppColors.bg600),
+            const SizedBox(height: 16),
+            const Text('No chats yet', style: TextStyle(color: AppColors.white, fontSize: 18, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            const Text('Tap the button below to start a conversation', style: TextStyle(color: AppColors.surface400, fontSize: 13)),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadConversations,
+      color: AppColors.brand400,
+      backgroundColor: AppColors.bg800,
+      child: ListView.builder(
+        itemCount: filtered.length,
+        itemBuilder: (_, i) => _ChatRow(
+          conv: filtered[i],
+          onTap: () => _openChat(filtered[i]),
+        ),
       ),
     );
   }
 
-  Widget _buildCreateForm() {
-    final profile = ref.read(authProvider);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Target phone number
-        const Text('CALL NUMBER', style: TextStyle(color: AppColors.surface400, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.8)),
-        const SizedBox(height: 6),
-        TextField(
-          controller: _targetPhoneCtrl,
-          keyboardType: TextInputType.phone,
-          style: const TextStyle(color: AppColors.white, fontSize: 14),
-          decoration: const InputDecoration(
-            hintText: '03XX XXXXXXX  (leave empty for open session)',
-            prefixIcon: Icon(Icons.dialpad_rounded, color: AppColors.bg500, size: 20),
-          ),
-          onChanged: (_) => setState(() => _targetUser = null),
-        ),
-        if (_targetUser != null) ...[
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.green400.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.green400.withOpacity(0.3)),
+  void _openChat(Map<String, dynamic> conv) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => DirectChatScreen(
+        otherPhone: conv['other_phone'] as String,
+        otherName: conv['other_name'] as String? ?? conv['other_phone'] as String,
+        otherLanguage: conv['other_language'] as String? ?? 'en',
+        onCall: (phone) => _callByPhone(phone),
+      ),
+    )).then((_) => _loadConversations());
+  }
+
+  void _showNewChatDialog() {
+    final ctrl = TextEditingController();
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.bg900,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => Padding(
+        padding: EdgeInsets.only(left: 20, right: 20, top: 20, bottom: MediaQuery.of(context).viewInsets.bottom + 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('New Chat', style: TextStyle(color: AppColors.white, fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 16),
+            TextField(
+              controller: ctrl,
+              keyboardType: TextInputType.phone,
+              autofocus: true,
+              style: const TextStyle(color: AppColors.white),
+              decoration: const InputDecoration(
+                hintText: '03XX XXXXXXX or +92...',
+                prefixIcon: Icon(Icons.dialpad_rounded, color: AppColors.bg500, size: 20),
+              ),
             ),
-            child: Row(
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.brand600,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: () async {
+                  final raw = ctrl.text.trim();
+                  if (raw.isEmpty) return;
+                  final formatted = raw.startsWith('+') ? raw : '+92${raw.replaceFirst(RegExp(r'^0'), '')}';
+                  Navigator.pop(context);
+                  final user = await ApiService.findUserByPhone(formatted);
+                  if (!mounted) return;
+                  Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => DirectChatScreen(
+                      otherPhone: formatted,
+                      otherName: user?['name'] as String? ?? formatted,
+                      otherLanguage: user?['language'] as String? ?? 'en',
+                      onCall: (phone) => _callByPhone(phone),
+                    ),
+                  )).then((_) => _loadConversations());
+                },
+                child: const Text('Open Chat', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Calls Tab ─────────────────────────────────────────────────────────────
+
+  Widget _buildCallsTab() {
+    final profile = ref.read(authProvider);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Call by number
+          const Text('CALL NUMBER', style: TextStyle(color: AppColors.surface400, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.8)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _phoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  style: const TextStyle(color: AppColors.white, fontSize: 14),
+                  decoration: const InputDecoration(
+                    hintText: '03XX XXXXXXX',
+                    prefixIcon: Icon(Icons.dialpad_rounded, color: AppColors.bg500, size: 20),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              GestureDetector(
+                onTap: _loading ? null : () {
+                  final phone = _phoneCtrl.text.trim();
+                  if (phone.isEmpty) { _toast('Enter a phone number'); return; }
+                  _callByPhone(phone);
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    color: _loading ? AppColors.bg600 : const Color(0xFF25D366),
+                    shape: BoxShape.circle,
+                    boxShadow: _loading ? null : [BoxShadow(color: const Color(0xFF25D366).withOpacity(0.35), blurRadius: 12)],
+                  ),
+                  child: _loading
+                      ? const Padding(
+                          padding: EdgeInsets.all(14),
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.call_rounded, color: Colors.white, size: 26),
+                ),
+              ),
+            ],
+          ),
+          if (_loadingMessage.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Row(
               children: [
-                const Icon(Icons.check_circle_rounded, color: AppColors.green400, size: 16),
-                const SizedBox(width: 8),
-                Text(
-                  '${_targetUser!['name']}  •  ${languageFlag(_targetUser!['language'])} ${languageName(_targetUser!['language'])}',
-                  style: const TextStyle(color: AppColors.green400, fontSize: 13),
+                const SizedBox(width: 4),
+                Text(_loadingMessage, style: const TextStyle(color: AppColors.green400, fontSize: 13, fontWeight: FontWeight.w600)),
+                const SizedBox(width: 12),
+                GestureDetector(
+                  onTap: () { _callTimeoutTimer?.cancel(); setState(() { _loading = false; _loadingMessage = ''; }); },
+                  child: const Text('Cancel', style: TextStyle(color: AppColors.red500, fontSize: 12)),
                 ),
               ],
             ),
-          ),
-        ],
-        const SizedBox(height: 20),
-        // Action buttons — call + message
-        _buildActionButtons(),
-        const SizedBox(height: 20),
-        // Language selector (user can change their own language)
-        LanguageSelector(
-          value: profile?.language ?? _language,
-          onChanged: (v) async {
-            setState(() => _language = v);
-            if (profile != null) {
-              await ref.read(authProvider.notifier).updateLanguage(v);
-            }
-          },
-          label: 'Your Language',
-        ),
-        const SizedBox(height: 16),
-        const Text('CONVERSATION DOMAIN', style: TextStyle(color: AppColors.surface400, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.8)),
-        const SizedBox(height: 8),
-        _domainGrid(),
-      ],
-    );
-  }
-
-  Widget _buildActionButtons() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        // Call button
-        Column(
-          children: [
-            GestureDetector(
-              onTap: _loading ? null : _createSession,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  color: _loading
-                      ? AppColors.bg600
-                      : const Color(0xFF25D366),
-                  shape: BoxShape.circle,
-                  boxShadow: _loading
-                      ? null
-                      : [
-                          BoxShadow(
-                            color: const Color(0xFF25D366).withOpacity(0.4),
-                            blurRadius: 16,
-                            spreadRadius: 2,
-                          ),
-                        ],
-                ),
-                child: _loading
-                    ? const SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.5,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Icon(Icons.call_rounded, color: Colors.white, size: 28),
-              ),
-            ),
-            const SizedBox(height: 8),
-            if (_loadingMessage.isNotEmpty)
-              Column(
-                children: [
-                  Text(_loadingMessage, style: const TextStyle(color: AppColors.green400, fontSize: 12, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 4),
-                  GestureDetector(
-                    onTap: () {
-                      _callTimeoutTimer?.cancel();
-                      setState(() { _loading = false; _loadingMessage = ''; });
-                    },
-                    child: const Text('Cancel', style: TextStyle(color: AppColors.red500, fontSize: 11)),
-                  ),
-                ],
-              )
-            else
-              const Text('Voice Call', style: TextStyle(color: AppColors.surface400, fontSize: 12, fontWeight: FontWeight.w500)),
           ],
-        ),
-        const SizedBox(width: 48),
-        // Message button
-        Column(
-          children: [
-            GestureDetector(
-              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ChatListScreen())),
-              child: Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  color: AppColors.bg800,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: AppColors.bg600, width: 1.5),
-                ),
-                child: const Icon(Icons.chat_bubble_rounded, color: AppColors.brand400, size: 26),
-              ),
+          const SizedBox(height: 28),
+
+          // Language
+          if (profile != null)
+            LanguageSelector(
+              value: profile.language,
+              onChanged: (v) async {
+                setState(() => _language = v);
+                await ref.read(authProvider.notifier).updateLanguage(v);
+              },
+              label: 'Your Language',
             ),
-            const SizedBox(height: 8),
-            const Text('Message', style: TextStyle(color: AppColors.surface400, fontSize: 12, fontWeight: FontWeight.w500)),
-          ],
-        ),
-      ],
-    );
-  }
+          const SizedBox(height: 28),
 
-  Widget _buildJoinForm() {
-    final profile = ref.read(authProvider);
-    return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      LanguageSelector(
-        value: profile?.language ?? _language,
-        onChanged: (v) async {
-          setState(() => _language = v);
-          if (profile != null) {
-            await ref.read(authProvider.notifier).updateLanguage(v);
-          }
-        },
-        label: 'Your Language',
-      ),
-      const SizedBox(height: 20),
-
-      // Online users section
-      Row(
-        children: [
+          // Online users
           Row(
             children: [
               Container(
                 width: 8, height: 8,
                 decoration: BoxDecoration(
-                  color: _lobbyConnected ? AppColors.green400 : AppColors.surface400,
+                  color: _lobbyConnected ? AppColors.green400 : AppColors.bg500,
                   shape: BoxShape.circle,
                 ),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 8),
               Text(
-                _lobbyConnected ? 'ONLINE NOW' : 'CONNECT TO SEE ONLINE USERS',
+                _lobbyConnected ? 'ONLINE NOW (${_onlineUsers.length})' : 'NOT CONNECTED',
                 style: const TextStyle(color: AppColors.surface400, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.8),
               ),
             ],
           ),
-          const Spacer(),
-          if (!_lobbyConnected)
-            GestureDetector(
-              onTap: _maybeConnectLobby,
-              child: const Text('Go Online', style: TextStyle(color: AppColors.brand400, fontSize: 12, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 10),
+
+          if (_onlineUsers.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 20),
+              decoration: BoxDecoration(color: AppColors.bg800, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.bg700)),
+              child: const Column(
+                children: [
+                  Icon(Icons.people_outline_rounded, color: AppColors.surface400, size: 28),
+                  SizedBox(height: 8),
+                  Text('No one else online right now', style: TextStyle(color: AppColors.surface400, fontSize: 13)),
+                ],
+              ),
+            )
+          else
+            ..._onlineUsers.map((u) => _OnlineUserCard(
+              user: u,
+              onCall: _loading ? null : () => _callOnlineUser(u),
+            )),
+
+          const SizedBox(height: 20),
+          OutlinedButton.icon(
+            onPressed: () {
+              final p = ref.read(authProvider);
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => JoinScreen(name: p?.name ?? '', language: p?.language ?? _language),
+              ));
+            },
+            icon: const Icon(Icons.link_rounded, size: 16),
+            label: const Text('Join by Session ID'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppColors.surface400,
+              side: const BorderSide(color: AppColors.bg600),
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              minimumSize: const Size(double.infinity, 44),
             ),
+          ),
         ],
       ),
-      const SizedBox(height: 8),
+    );
+  }
+}
 
-      if (!_lobbyConnected)
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: AppColors.bg800,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.bg700),
-          ),
-          child: const Column(
-            children: [
-              Icon(Icons.wifi_off_rounded, color: AppColors.surface400, size: 24),
-              SizedBox(height: 6),
-              Text('Enter your name and tap "Go Online"', style: TextStyle(color: AppColors.surface400, fontSize: 12)),
-            ],
-          ),
-        )
-      else if (_onlineUsers.isEmpty)
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: AppColors.bg800,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.bg700),
-          ),
-          child: const Column(
-            children: [
-              Icon(Icons.people_outline_rounded, color: AppColors.surface400, size: 24),
-              SizedBox(height: 6),
-              Text('No one else online right now', style: TextStyle(color: AppColors.surface400, fontSize: 12)),
-            ],
-          ),
-        )
-      else
-        ..._onlineUsers.map((u) => _OnlineUserCard(
-          user: u,
-          onCall: _loading ? null : () => _callUser(u),
-        )),
+// ── Chat Row ─────────────────────────────────────────────────────────────────
 
-      const SizedBox(height: 16),
-      const Divider(color: AppColors.bg700),
-      const SizedBox(height: 12),
+class _ChatRow extends StatelessWidget {
+  final Map<String, dynamic> conv;
+  final VoidCallback onTap;
 
-      // Join by session ID
-      OutlinedButton.icon(
-        onPressed: _openJoin,
-        icon: const Icon(Icons.link_rounded, size: 16),
-        label: const Text('Join by Session ID / Link'),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: AppColors.surface400,
-          side: const BorderSide(color: AppColors.bg600),
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          minimumSize: const Size(double.infinity, 44),
+  const _ChatRow({required this.conv, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final name = conv['other_name'] as String? ?? conv['other_phone'] as String;
+    final lastMsg = conv['last_message'] as String? ?? '';
+    final unread = (conv['unread_count'] as num?)?.toInt() ?? 0;
+    final lang = conv['other_language'] as String? ?? 'en';
+    final flag = kLanguageFlags[lang] ?? '🌐';
+    final time = _fmt(conv['created_at'] as String?);
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
+
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppColors.bg800))),
+        child: Row(
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                CircleAvatar(
+                  radius: 26,
+                  backgroundColor: AppColors.brand600.withOpacity(0.2),
+                  child: Text(initial, style: const TextStyle(color: AppColors.brand400, fontSize: 20, fontWeight: FontWeight.bold)),
+                ),
+                Positioned(
+                  bottom: -1, right: -1,
+                  child: Container(
+                    padding: const EdgeInsets.all(1.5),
+                    decoration: const BoxDecoration(color: AppColors.bg950, shape: BoxShape.circle),
+                    child: Text(flag, style: const TextStyle(fontSize: 10)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(name,
+                            style: TextStyle(color: AppColors.white, fontSize: 15, fontWeight: unread > 0 ? FontWeight.w700 : FontWeight.w500),
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ),
+                      Text(time, style: TextStyle(color: unread > 0 ? AppColors.brand400 : AppColors.surface400, fontSize: 11)),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(lastMsg,
+                            style: TextStyle(color: unread > 0 ? AppColors.white : AppColors.surface400, fontSize: 13),
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ),
+                      if (unread > 0)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: const BoxDecoration(color: AppColors.brand600, shape: BoxShape.circle),
+                          child: Text('$unread', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
-    ],
-  );
+    );
   }
 
-  Widget _nameField() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const Text('YOUR NAME', style: TextStyle(color: AppColors.surface400, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.8)),
-      const SizedBox(height: 6),
-      TextField(
-        controller: _nameCtrl,
-        style: const TextStyle(color: AppColors.white, fontSize: 14),
-        decoration: const InputDecoration(hintText: 'Enter your name'),
-        textInputAction: TextInputAction.next,
-        inputFormatters: [LengthLimitingTextInputFormatter(40)],
-      ),
-    ],
-  );
-
-  Widget _domainGrid() => GridView.count(
-    shrinkWrap: true,
-    crossAxisCount: 3,
-    mainAxisSpacing: 8,
-    crossAxisSpacing: 8,
-    childAspectRatio: 1.6,
-    physics: const NeverScrollableScrollPhysics(),
-    children: _domains.map((d) {
-      final selected = _domain == d.$1;
-      return GestureDetector(
-        onTap: () => setState(() => _domain = d.$1),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          decoration: BoxDecoration(
-            color: selected ? const Color(0x264C6EF5) : AppColors.bg800,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: selected ? AppColors.brand500 : AppColors.bg600),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(d.$3, style: const TextStyle(fontSize: 18)),
-              const SizedBox(height: 2),
-              Text(
-                d.$2,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: selected ? AppColors.brand300 : AppColors.surface400,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }).toList(),
-  );
-
-  Widget _primaryButton(String label, VoidCallback onTap) => SizedBox(
-    width: double.infinity,
-    child: ElevatedButton(
-      onPressed: _loading ? null : onTap,
-      style: ElevatedButton.styleFrom(
-        backgroundColor: AppColors.brand600,
-        disabledBackgroundColor: AppColors.bg600,
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      ),
-      child: _loading
-          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-          : Text(label, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-    ),
-  );
-
-  Widget _buildStats() => Row(
-    mainAxisAlignment: MainAxisAlignment.center,
-    children: [
-      _stat('20+', 'Languages'),
-      _divider(),
-      _stat('< 2s', 'Avg Latency'),
-      _divider(),
-      _stat('98%+', 'Accuracy'),
-    ],
-  );
-
-  Widget _stat(String val, String label) => Column(
-    children: [
-      Text(val, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: AppColors.brand400)),
-      const SizedBox(height: 2),
-      Text(label, style: const TextStyle(fontSize: 11, color: AppColors.surface400)),
-    ],
-  );
-
-  Widget _divider() => Container(
-    width: 1, height: 36, margin: const EdgeInsets.symmetric(horizontal: 24),
-    color: AppColors.bg700,
-  );
+  String _fmt(String? iso) {
+    if (iso == null) return '';
+    try {
+      final dt = DateTime.parse(iso).toLocal();
+      final now = DateTime.now();
+      if (dt.day == now.day && dt.month == now.month && dt.year == now.year) {
+        return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      }
+      return '${dt.day}/${dt.month}';
+    } catch (_) { return ''; }
+  }
 }
+
+// ── Online User Card ──────────────────────────────────────────────────────────
 
 class _OnlineUserCard extends StatelessWidget {
   final OnlineUser user;
@@ -894,13 +811,12 @@ class _OnlineUserCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final flag = kLanguageFlags[user.language] ?? '🌐';
-    final lang = languageName(user.language);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
         color: AppColors.bg800,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.green400.withOpacity(0.25)),
+        border: Border.all(color: AppColors.green400.withOpacity(0.2)),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -912,18 +828,15 @@ class _OnlineUserCard extends StatelessWidget {
                 CircleAvatar(
                   radius: 22,
                   backgroundColor: AppColors.brand600.withOpacity(0.2),
-                  child: Text(
-                    user.name.isNotEmpty ? user.name[0].toUpperCase() : '?',
-                    style: const TextStyle(color: AppColors.brand400, fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
+                  child: Text(user.name.isNotEmpty ? user.name[0].toUpperCase() : '?',
+                      style: const TextStyle(color: AppColors.brand400, fontSize: 18, fontWeight: FontWeight.bold)),
                 ),
                 Positioned(
                   bottom: 0, right: 0,
                   child: Container(
                     width: 10, height: 10,
                     decoration: BoxDecoration(
-                      color: AppColors.green400,
-                      shape: BoxShape.circle,
+                      color: AppColors.green400, shape: BoxShape.circle,
                       border: Border.all(color: AppColors.bg800, width: 1.5),
                     ),
                   ),
@@ -936,11 +849,10 @@ class _OnlineUserCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(user.name, style: const TextStyle(color: AppColors.white, fontSize: 14, fontWeight: FontWeight.w600)),
-                  Text('$flag $lang', style: const TextStyle(color: AppColors.surface400, fontSize: 12)),
+                  Text('$flag ${languageName(user.language)}', style: const TextStyle(color: AppColors.surface400, fontSize: 12)),
                 ],
               ),
             ),
-            const SizedBox(width: 8),
             GestureDetector(
               onTap: onCall,
               child: Container(
@@ -950,9 +862,9 @@ class _OnlineUserCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: AppColors.green400.withOpacity(0.4)),
                 ),
-                child: Row(
+                child: const Row(
                   mainAxisSize: MainAxisSize.min,
-                  children: const [
+                  children: [
                     Icon(Icons.call_rounded, color: AppColors.green400, size: 16),
                     SizedBox(width: 4),
                     Text('Call', style: TextStyle(color: AppColors.green400, fontSize: 13, fontWeight: FontWeight.w600)),
@@ -967,35 +879,74 @@ class _OnlineUserCard extends StatelessWidget {
   }
 }
 
+// ── Search Delegate ───────────────────────────────────────────────────────────
+
+class _ChatSearchDelegate extends SearchDelegate<void> {
+  final List<Map<String, dynamic>> conversations;
+  final void Function(Map<String, dynamic>) onOpen;
+
+  _ChatSearchDelegate(this.conversations, this.onOpen);
+
+  @override
+  ThemeData appBarTheme(BuildContext context) => Theme.of(context).copyWith(
+    inputDecorationTheme: const InputDecorationTheme(border: InputBorder.none),
+    appBarTheme: const AppBarTheme(backgroundColor: AppColors.bg900, elevation: 0),
+  );
+
+  @override
+  List<Widget> buildActions(BuildContext context) => [
+    IconButton(icon: const Icon(Icons.clear), onPressed: () => query = ''),
+  ];
+
+  @override
+  Widget buildLeading(BuildContext context) =>
+      IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => close(context, null));
+
+  @override
+  Widget buildResults(BuildContext context) => _buildList(context);
+
+  @override
+  Widget buildSuggestions(BuildContext context) => _buildList(context);
+
+  Widget _buildList(BuildContext context) {
+    final q = query.toLowerCase();
+    final results = q.isEmpty ? conversations : conversations.where((c) {
+      final name = (c['other_name'] as String? ?? '').toLowerCase();
+      final phone = (c['other_phone'] as String? ?? '').toLowerCase();
+      return name.contains(q) || phone.contains(q);
+    }).toList();
+
+    return Container(
+      color: AppColors.bg950,
+      child: ListView.builder(
+        itemCount: results.length,
+        itemBuilder: (_, i) => _ChatRow(conv: results[i], onTap: () { close(context, null); onOpen(results[i]); }),
+      ),
+    );
+  }
+}
+
+// ── Incoming Call Overlay ─────────────────────────────────────────────────────
+
 class _IncomingCallOverlay extends StatefulWidget {
   final IncomingCall call;
   final VoidCallback onAccept;
   final VoidCallback onReject;
 
-  const _IncomingCallOverlay({
-    required this.call,
-    required this.onAccept,
-    required this.onReject,
-  });
+  const _IncomingCallOverlay({required this.call, required this.onAccept, required this.onReject});
 
   @override
   State<_IncomingCallOverlay> createState() => _IncomingCallOverlayState();
 }
 
-class _IncomingCallOverlayState extends State<_IncomingCallOverlay>
-    with SingleTickerProviderStateMixin {
+class _IncomingCallOverlayState extends State<_IncomingCallOverlay> with SingleTickerProviderStateMixin {
   late final AnimationController _ring;
   Timer? _vibrateTimer;
 
   @override
   void initState() {
     super.initState();
-    _ring = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1000),
-    )..repeat();
-
-    // Vibrate + alert sound on every ring cycle
+    _ring = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000))..repeat();
     HapticFeedback.vibrate();
     SystemSound.play(SystemSoundType.alert);
     _vibrateTimer = Timer.periodic(const Duration(milliseconds: 1200), (_) {
@@ -1018,12 +969,11 @@ class _IncomingCallOverlayState extends State<_IncomingCallOverlay>
 
     return Positioned.fill(
       child: Material(
-        color: Colors.black.withOpacity(0.85),
+        color: Colors.black.withOpacity(0.92),
         child: SafeArea(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Pulsing ring
               AnimatedBuilder(
                 animation: _ring,
                 builder: (_, child) => Stack(
@@ -1032,92 +982,66 @@ class _IncomingCallOverlayState extends State<_IncomingCallOverlay>
                     Transform.scale(
                       scale: 1.0 + _ring.value * 0.5,
                       child: Opacity(
-                        opacity: (1.0 - _ring.value) * 0.4,
-                        child: Container(
-                          width: 120, height: 120,
-                          decoration: const BoxDecoration(
-                            color: AppColors.green400,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
+                        opacity: (1.0 - _ring.value) * 0.35,
+                        child: Container(width: 130, height: 130, decoration: const BoxDecoration(color: AppColors.green400, shape: BoxShape.circle)),
                       ),
                     ),
                     child!,
                   ],
                 ),
                 child: CircleAvatar(
-                  radius: 44,
+                  radius: 48,
                   backgroundColor: AppColors.green400.withOpacity(0.2),
                   child: Text(
-                    widget.call.callerName.isNotEmpty
-                        ? widget.call.callerName[0].toUpperCase()
-                        : '?',
-                    style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: AppColors.white),
+                    widget.call.callerName.isNotEmpty ? widget.call.callerName[0].toUpperCase() : '?',
+                    style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: AppColors.white),
                   ),
                 ),
               ),
               const SizedBox(height: 32),
-              const Text(
-                'Incoming Call',
-                style: TextStyle(color: AppColors.surface400, fontSize: 14, letterSpacing: 1),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                widget.call.callerName,
-                style: const TextStyle(color: AppColors.white, fontSize: 28, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '$flag $lang',
-                style: const TextStyle(color: AppColors.surface400, fontSize: 15),
-              ),
-              const SizedBox(height: 60),
+              const Text('Incoming Voice Call', style: TextStyle(color: AppColors.surface400, fontSize: 13, letterSpacing: 1)),
+              const SizedBox(height: 10),
+              Text(widget.call.callerName, style: const TextStyle(color: AppColors.white, fontSize: 30, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              Text('$flag $lang', style: const TextStyle(color: AppColors.surface400, fontSize: 15)),
+              const SizedBox(height: 64),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Reject
-                  GestureDetector(
-                    onTap: widget.onReject,
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 64, height: 64,
-                          decoration: const BoxDecoration(
-                            color: Color(0xFFE53E3E),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.call_end_rounded, color: Colors.white, size: 28),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text('Decline', style: TextStyle(color: AppColors.surface400, fontSize: 12)),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 64),
-                  // Accept
-                  GestureDetector(
-                    onTap: widget.onAccept,
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 64, height: 64,
-                          decoration: const BoxDecoration(
-                            color: AppColors.green400,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.call_rounded, color: Colors.white, size: 28),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text('Accept', style: TextStyle(color: AppColors.surface400, fontSize: 12)),
-                      ],
-                    ),
-                  ),
+                  _CallBtn(icon: Icons.call_end_rounded, color: AppColors.red500, label: 'Decline', onTap: widget.onReject),
+                  const SizedBox(width: 72),
+                  _CallBtn(icon: Icons.call_rounded, color: AppColors.green400, label: 'Accept', onTap: widget.onAccept),
                 ],
               ),
             ],
           ),
         ),
       ),
-    ).animate().fadeIn(duration: 300.ms);
+    );
   }
+}
+
+class _CallBtn extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String label;
+  final VoidCallback onTap;
+
+  const _CallBtn({required this.icon, required this.color, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    child: Column(
+      children: [
+        Container(
+          width: 64, height: 64,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          child: Icon(icon, color: Colors.white, size: 28),
+        ),
+        const SizedBox(height: 8),
+        Text(label, style: const TextStyle(color: AppColors.surface400, fontSize: 12)),
+      ],
+    ),
+  );
 }

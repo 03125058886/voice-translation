@@ -1,6 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
+import 'package:uuid/uuid.dart';
+import '../config/app_config.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
@@ -9,12 +15,14 @@ class DirectChatScreen extends ConsumerStatefulWidget {
   final String otherPhone;
   final String otherName;
   final String otherLanguage;
+  final void Function(String phone)? onCall;
 
   const DirectChatScreen({
     super.key,
     required this.otherPhone,
     required this.otherName,
     required this.otherLanguage,
+    this.onCall,
   });
 
   @override
@@ -24,10 +32,18 @@ class DirectChatScreen extends ConsumerStatefulWidget {
 class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
   final _msgCtrl = TextEditingController();
   final _scroll = ScrollController();
+  final _recorder = AudioRecorder();
+  final _uuid = const Uuid();
   List<Map<String, dynamic>> _messages = [];
   bool _loading = true;
   bool _sending = false;
   Timer? _pollTimer;
+
+  // Voice recording
+  bool _recording = false;
+  String? _recordPath;
+  int _recSecs = 0;
+  Timer? _recTimer;
 
   String get _myPhone => ref.read(authProvider)?.phone ?? '';
 
@@ -41,6 +57,8 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _recTimer?.cancel();
+    _recorder.dispose();
     _msgCtrl.dispose();
     _scroll.dispose();
     super.dispose();
@@ -87,6 +105,66 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
     }
   }
 
+  Future<void> _startRecord() async {
+    if (_recording) return;
+    final hasPermission = await _recorder.hasPermission();
+    if (!hasPermission) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone permission required'), backgroundColor: AppColors.red500),
+      );
+      return;
+    }
+    final dir = await getTemporaryDirectory();
+    _recordPath = '${dir.path}/${_uuid.v4()}.m4a';
+    await _recorder.start(
+      const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 44100, numChannels: 1),
+      path: _recordPath!,
+    );
+    _recSecs = 0;
+    _recTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _recSecs++);
+    });
+    setState(() => _recording = true);
+  }
+
+  Future<void> _stopRecord({bool cancel = false}) async {
+    if (!_recording) return;
+    _recTimer?.cancel();
+    final path = await _recorder.stop();
+    setState(() => _recording = false);
+    if (cancel || path == null) return;
+    final file = File(path);
+    if (!await file.exists()) return;
+    final durationMs = _recSecs * 1000;
+    setState(() => _sending = true);
+    try {
+      final msg = await ApiService.uploadDirectFile(
+        senderPhone: _myPhone,
+        receiverPhone: widget.otherPhone,
+        file: file,
+        messageType: 'voice',
+        mimeType: 'audio/mp4',
+        durationMs: durationMs,
+      );
+      if (mounted) {
+        setState(() => _messages = [..._messages, msg]);
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString().replaceAll('Exception: ', '')), backgroundColor: AppColors.red500),
+        );
+      }
+    } finally {
+      file.delete().ignore();
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  String _fmtRecTime(int s) =>
+      '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
+
   void _scrollToBottom() {
     if (_scroll.hasClients) {
       _scroll.animateTo(
@@ -127,6 +205,12 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.call_rounded, color: Color(0xFF4ADE80), size: 22),
+            onPressed: () => widget.onCall?.call(widget.otherPhone),
+          ),
+        ],
         titleSpacing: 0,
         elevation: 0,
         bottom: PreferredSize(
@@ -134,6 +218,7 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
           child: Container(height: 1, color: AppColors.bg700),
         ),
       ),
+      resizeToAvoidBottomInset: true,
       body: Column(
         children: [
           Expanded(
@@ -169,13 +254,10 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
   }
 
   Widget _buildInputBar() {
+    if (_recording) return _buildRecordingBar();
+    final hasText = _msgCtrl.text.trim().isNotEmpty;
     return Container(
-      padding: EdgeInsets.only(
-        left: 12,
-        right: 12,
-        top: 10,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 12,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: const BoxDecoration(
         color: AppColors.bg900,
         border: Border(top: BorderSide(color: AppColors.bg700)),
@@ -189,6 +271,7 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
               maxLines: 4,
               minLines: 1,
               textInputAction: TextInputAction.send,
+              onChanged: (_) => setState(() {}),
               onSubmitted: (_) => _send(),
               decoration: InputDecoration(
                 hintText: 'Type a message...',
@@ -205,7 +288,7 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
           ),
           const SizedBox(width: 8),
           GestureDetector(
-            onTap: _send,
+            onTap: _sending ? null : (hasText ? _send : _startRecord),
             child: Container(
               width: 44,
               height: 44,
@@ -218,7 +301,59 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
                       padding: EdgeInsets.all(12),
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                     )
-                  : const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+                  : Icon(
+                      hasText ? Icons.send_rounded : Icons.mic_rounded,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecordingBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: const BoxDecoration(
+        color: AppColors.bg900,
+        border: Border(top: BorderSide(color: AppColors.bg700)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.fiber_manual_record, color: Colors.red, size: 14),
+          const SizedBox(width: 6),
+          Text(
+            _fmtRecTime(_recSecs),
+            style: const TextStyle(color: AppColors.white, fontSize: 15, fontWeight: FontWeight.w600),
+          ),
+          const Spacer(),
+          GestureDetector(
+            onTap: () => _stopRecord(cancel: true),
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.15),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.red.withOpacity(0.4)),
+              ),
+              child: const Icon(Icons.close_rounded, color: Colors.red, size: 20),
+            ),
+          ),
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: () => _stopRecord(),
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: AppColors.brand600.withOpacity(0.15),
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.brand600.withOpacity(0.5)),
+              ),
+              child: const Icon(Icons.send_rounded, color: AppColors.brand400, size: 20),
             ),
           ),
         ],
@@ -227,15 +362,56 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
   }
 }
 
-class _MessageBubble extends StatelessWidget {
+class _MessageBubble extends StatefulWidget {
   final Map<String, dynamic> msg;
   final bool isMe;
 
   const _MessageBubble({required this.msg, required this.isMe});
 
   @override
+  State<_MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<_MessageBubble> {
+  final _player = AudioPlayer();
+  bool _playing = false;
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _togglePlay() async {
+    if (_loading) return;
+    if (_playing) {
+      await _player.stop();
+      if (mounted) setState(() => _playing = false);
+      return;
+    }
+    setState(() => _loading = true);
+    try {
+      final url = '${AppConfig.apiBaseUrl}${widget.msg['file_url']}';
+      await _player.setUrl(url);
+      if (mounted) setState(() { _loading = false; _playing = true; });
+      await _player.play();
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
+    if (mounted) setState(() => _playing = false);
+  }
+
+  String _fmtSecs(int s) =>
+      '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
+
+  @override
   Widget build(BuildContext context) {
+    final isMe = widget.isMe;
+    final msg = widget.msg;
     final time = _formatTime(msg['created_at'] as String?);
+    final isVoice = msg['message_type'] == 'voice';
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
@@ -248,7 +424,7 @@ class _MessageBubble extends StatelessWidget {
           Flexible(
             child: Container(
               constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              padding: EdgeInsets.symmetric(horizontal: isVoice ? 10 : 14, vertical: isVoice ? 8 : 9),
               decoration: BoxDecoration(
                 color: isMe ? AppColors.brand600 : AppColors.bg800,
                 borderRadius: BorderRadius.only(
@@ -261,7 +437,7 @@ class _MessageBubble extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text(
+                  isVoice ? _voiceContent(isMe) : Text(
                     msg['content'] as String? ?? '',
                     style: const TextStyle(color: AppColors.white, fontSize: 14, height: 1.4),
                   ),
@@ -276,6 +452,44 @@ class _MessageBubble extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+
+  Widget _voiceContent(bool isMe) {
+    final secs = ((widget.msg['duration_ms'] as int?) ?? 0) ~/ 1000;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GestureDetector(
+          onTap: _togglePlay,
+          child: Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: isMe ? Colors.white.withOpacity(0.2) : AppColors.brand600.withOpacity(0.2),
+              shape: BoxShape.circle,
+            ),
+            child: _loading
+                ? SizedBox(
+                    width: 18, height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: isMe ? Colors.white : AppColors.brand400,
+                    ),
+                  )
+                : Icon(
+                    _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                    color: isMe ? Colors.white : AppColors.brand400,
+                    size: 20,
+                  ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          _fmtSecs(secs),
+          style: TextStyle(fontSize: 12, color: isMe ? Colors.white70 : AppColors.surface400),
+        ),
+      ],
     );
   }
 

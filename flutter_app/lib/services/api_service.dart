@@ -231,6 +231,33 @@ class ApiService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
+  static Future<Map<String, dynamic>> uploadDirectFile({
+    required String senderPhone,
+    required String receiverPhone,
+    required File file,
+    required String messageType,
+    required String mimeType,
+    int? durationMs,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$_base/api/dm/upload'),
+    );
+    request.fields['sender_phone'] = senderPhone;
+    request.fields['receiver_phone'] = receiverPhone;
+    request.fields['message_type'] = messageType;
+    if (durationMs != null) request.fields['duration_ms'] = durationMs.toString();
+    request.files.add(await http.MultipartFile.fromPath(
+      'file',
+      file.path,
+      contentType: _parseMediaType(mimeType),
+    ));
+    final streamed = await _client.send(request);
+    final res = await http.Response.fromStream(streamed);
+    _checkStatus(res);
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   static Future<List<Map<String, dynamic>>> getDirectMessages({
     required String me,
     required String other,

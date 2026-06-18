@@ -44,7 +44,12 @@ async def init_db():
                     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     sender_phone    TEXT NOT NULL,
                     receiver_phone  TEXT NOT NULL,
-                    content         TEXT NOT NULL,
+                    content         TEXT,
+                    message_type    TEXT NOT NULL DEFAULT 'text',
+                    file_url        TEXT,
+                    file_name       TEXT,
+                    mime_type       TEXT,
+                    duration_ms     INTEGER,
                     is_read         BOOLEAN DEFAULT FALSE,
                     created_at      TIMESTAMPTZ DEFAULT NOW()
                 );
@@ -52,6 +57,12 @@ async def init_db():
                     ON direct_messages(sender_phone, receiver_phone, created_at);
                 CREATE INDEX IF NOT EXISTS idx_dm_receiver
                     ON direct_messages(receiver_phone, created_at);
+                ALTER TABLE direct_messages ALTER COLUMN content DROP NOT NULL;
+                ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS message_type TEXT NOT NULL DEFAULT 'text';
+                ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS file_url TEXT;
+                ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS file_name TEXT;
+                ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS mime_type TEXT;
+                ALTER TABLE direct_messages ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
             """)
         logger.info("Database initialized")
     except Exception as e:
@@ -204,18 +215,31 @@ async def get_messages(session_id: str, limit: int = 100) -> list[dict]:
         ]
 
 
-async def save_direct_message(sender_phone: str, receiver_phone: str, content: str) -> dict | None:
+async def save_direct_message(
+    sender_phone: str,
+    receiver_phone: str,
+    content: str | None = None,
+    message_type: str = "text",
+    file_url: str | None = None,
+    file_name: str | None = None,
+    mime_type: str | None = None,
+    duration_ms: int | None = None,
+) -> dict | None:
     pool = get_pool()
     if not pool:
         return None
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO direct_messages (sender_phone, receiver_phone, content)
-            VALUES ($1, $2, $3)
-            RETURNING id, sender_phone, receiver_phone, content, is_read, created_at
+            INSERT INTO direct_messages
+                (sender_phone, receiver_phone, content, message_type,
+                 file_url, file_name, mime_type, duration_ms)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id, sender_phone, receiver_phone, content, message_type,
+                      file_url, file_name, mime_type, duration_ms, is_read, created_at
             """,
-            sender_phone, receiver_phone, content,
+            sender_phone, receiver_phone, content, message_type,
+            file_url, file_name, mime_type, duration_ms,
         )
         if row:
             return {
@@ -223,6 +247,11 @@ async def save_direct_message(sender_phone: str, receiver_phone: str, content: s
                 "sender_phone": row["sender_phone"],
                 "receiver_phone": row["receiver_phone"],
                 "content": row["content"],
+                "message_type": row["message_type"],
+                "file_url": row["file_url"],
+                "file_name": row["file_name"],
+                "mime_type": row["mime_type"],
+                "duration_ms": row["duration_ms"],
                 "is_read": row["is_read"],
                 "created_at": row["created_at"].isoformat(),
             }
@@ -236,7 +265,8 @@ async def get_direct_messages(me: str, other: str, limit: int = 100) -> list[dic
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, sender_phone, receiver_phone, content, is_read, created_at
+            SELECT id, sender_phone, receiver_phone, content, message_type,
+                   file_url, file_name, mime_type, duration_ms, is_read, created_at
             FROM direct_messages
             WHERE (sender_phone = $1 AND receiver_phone = $2)
                OR (sender_phone = $2 AND receiver_phone = $1)
@@ -256,6 +286,11 @@ async def get_direct_messages(me: str, other: str, limit: int = 100) -> list[dic
                 "sender_phone": r["sender_phone"],
                 "receiver_phone": r["receiver_phone"],
                 "content": r["content"],
+                "message_type": r["message_type"],
+                "file_url": r["file_url"],
+                "file_name": r["file_name"],
+                "mime_type": r["mime_type"],
+                "duration_ms": r["duration_ms"],
                 "is_read": r["is_read"],
                 "created_at": r["created_at"].isoformat(),
             }

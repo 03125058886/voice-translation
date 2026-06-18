@@ -37,9 +37,12 @@ class NotificationService {
       vibrationPattern: Int64List.fromList([0, 500, 500, 500, 500, 500]),
     );
 
-    await _localNotif
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(androidChannel);
+    final androidPlugin = _localNotif
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    await androidPlugin?.createNotificationChannel(androidChannel);
+    // Android 13+ requires this explicit runtime permission request —
+    // FirebaseMessaging.requestPermission() does not trigger the system dialog on Android.
+    await androidPlugin?.requestNotificationsPermission();
 
     const initSettings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
