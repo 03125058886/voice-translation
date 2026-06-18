@@ -42,6 +42,7 @@ async def send_incoming_call(
         return False
     try:
         from firebase_admin import messaging
+        # Data-only message so Flutter background handler shows custom ring notification
         message = messaging.Message(
             data={
                 "type": "incoming_call",
@@ -53,10 +54,6 @@ async def send_incoming_call(
             android=messaging.AndroidConfig(
                 priority="high",
                 ttl=30,
-            ),
-            notification=messaging.Notification(
-                title=f"📞 {caller_name} is calling",
-                body="Voice Translation Call — tap to answer",
             ),
             token=fcm_token,
         )

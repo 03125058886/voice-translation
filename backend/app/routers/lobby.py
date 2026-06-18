@@ -97,7 +97,7 @@ async def lobby_websocket(
                 session = await sm.create_session(session)
                 session = await sm.add_participant(session.id, participant)
 
-                # Notify target user
+                # Notify target user via WebSocket (+ FCM backup when phone known)
                 sent = await lobby_manager.send_to(target_id, {
                     "type": "incoming_call",
                     "data": {
@@ -107,6 +107,17 @@ async def lobby_websocket(
                         "session_id": session.id,
                     },
                 })
+                target = lobby_manager.get_user(target_id)
+                if target and target.phone:
+                    db_user = await get_user(target.phone)
+                    if db_user and db_user.get("fcm_token"):
+                        await send_incoming_call(
+                            fcm_token=db_user["fcm_token"],
+                            caller_name=user.name,
+                            caller_language=user.language,
+                            caller_id=user_id,
+                            session_id=session.id,
+                        )
 
                 # Tell caller the session was created
                 await websocket.send_json({
@@ -139,7 +150,7 @@ async def lobby_websocket(
                 target_found = False
 
                 if target:
-                    # User is online — send via WebSocket
+                    # User is online — WebSocket + FCM backup (app backgrounded)
                     sent = await lobby_manager.send_to(target.user_id, {
                         "type": "incoming_call",
                         "data": {
@@ -150,6 +161,16 @@ async def lobby_websocket(
                         },
                     })
                     target_found = sent
+                    db_user = await get_user(target_phone)
+                    if db_user and db_user.get("fcm_token"):
+                        fcm_sent = await send_incoming_call(
+                            fcm_token=db_user["fcm_token"],
+                            caller_name=user.name,
+                            caller_language=user.language,
+                            caller_id=user_id,
+                            session_id=session.id,
+                        )
+                        target_found = target_found or fcm_sent
                 else:
                     # User offline — send FCM push notification
                     db_user = await get_user(target_phone)

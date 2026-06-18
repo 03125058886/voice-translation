@@ -102,6 +102,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   void _handleFcmCallData(Map<String, dynamic> data) {
     if (!mounted) return;
+    NotificationService.showIncomingCallFromData(data);
     setState(() => _incomingCall = IncomingCall(
       callerId: data['caller_id'] ?? '',
       callerName: data['caller_name'] ?? 'Unknown',
@@ -131,7 +132,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     };
 
     _lobby.onIncomingCall = (call) {
-      if (mounted) setState(() => _incomingCall = call);
+      if (!mounted) return;
+      NotificationService.showIncomingCallFromData({
+        'caller_id': call.callerId,
+        'caller_name': call.callerName,
+        'caller_language': call.callerLanguage,
+        'session_id': call.sessionId,
+        'type': 'incoming_call',
+      });
+      setState(() => _incomingCall = call);
     };
 
     _lobby.onCallInitiated = (call) async {
@@ -947,11 +956,10 @@ class _IncomingCallOverlayState extends State<_IncomingCallOverlay> with SingleT
   void initState() {
     super.initState();
     _ring = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000))..repeat();
+    // Haptic pulse while overlay is visible (ringtone handled by NotificationService)
     HapticFeedback.vibrate();
-    SystemSound.play(SystemSoundType.alert);
     _vibrateTimer = Timer.periodic(const Duration(milliseconds: 1200), (_) {
       HapticFeedback.vibrate();
-      SystemSound.play(SystemSoundType.alert);
     });
   }
 

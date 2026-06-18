@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -18,14 +19,17 @@ class AudioService {
   final _uuid = const Uuid();
 
   StreamSubscription<Uint8List>? _recordSub;
+  StreamSubscription<PlayerState>? _playSub;
   bool _isRecording = false;
   bool _isMuted = false;
+  bool _sessionReady = false;
 
   AudioChunkCallback? onChunk;
   VolumeCallback? onVolume;
 
   Future<void> initialize() async {
     final session = await AudioSession.instance;
+    // Keep original session profile — real-time mic capture depends on this.
     await session.configure(AudioSessionConfiguration(
       avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
       avAudioSessionCategoryOptions:
@@ -40,6 +44,7 @@ class AudioService {
       androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransientMayDuck,
       androidWillPauseWhenDucked: false,
     ));
+    _sessionReady = true;
   }
 
   Future<bool> hasPermission() async {
@@ -92,24 +97,36 @@ class AudioService {
   void unmute() => _isMuted = false;
 
   Future<void> playAudioBase64(String base64Audio, {String format = 'mp3'}) async {
+    if (base64Audio.isEmpty) return;
     try {
+      if (!_sessionReady) await initialize();
+
       final bytes = base64Decode(base64Audio);
+      if (bytes.isEmpty) return;
+
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/${_uuid.v4()}.$format');
-      await file.writeAsBytes(bytes);
+      await file.writeAsBytes(bytes, flush: true);
+
+      // Activate session for playback without reconfiguring mic capture.
+      final session = await AudioSession.instance;
+      await session.setActive(true);
+
+      await _playSub?.cancel();
+      if (_player.playing) await _player.stop();
 
       await _player.setFilePath(file.path);
       await _player.seek(Duration.zero);
+      await _player.setVolume(1.0);
       await _player.play();
 
-      // Clean up after playback
-      _player.playerStateStream.listen((state) {
+      _playSub = _player.playerStateStream.listen((state) {
         if (state.processingState == ProcessingState.completed) {
           file.delete().ignore();
         }
       });
-    } catch (e) {
-      // ignore playback errors
+    } catch (e, st) {
+      debugPrint('[AudioService] playback failed: $e\n$st');
     }
   }
 
@@ -118,7 +135,9 @@ class AudioService {
 
   Future<void> dispose() async {
     await stopRecording();
+    await _playSub?.cancel();
     await _player.dispose();
     await _recorder.dispose();
+    _sessionReady = false;
   }
 }
