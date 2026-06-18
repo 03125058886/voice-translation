@@ -8,6 +8,7 @@ from app.core.session_manager import SessionManager
 from app.models.session import Session, Participant, SessionStatus
 from app.core.database import get_user
 from app.services.fcm_service import send_incoming_call
+from app.utils.phone import normalize_phone
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -131,7 +132,7 @@ async def lobby_websocket(
                 })
 
             elif msg_type == "call_by_phone":
-                target_phone = data.get("target_phone", "")
+                target_phone = normalize_phone(data.get("target_phone", ""))
                 sm = _session_manager
                 if not target_phone or not sm:
                     await websocket.send_json({

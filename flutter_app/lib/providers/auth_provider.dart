@@ -3,8 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_profile.dart';
+import '../utils/phone_utils.dart';
 import '../services/notification_service.dart';
-import '../services/api_service.dart';
 
 final authProvider =
     StateNotifierProvider<AuthNotifier, UserProfile?>((ref) => AuthNotifier());
@@ -25,35 +25,36 @@ class AuthNotifier extends StateNotifier<UserProfile?> {
     final name = prefs.getString(_kName);
     final phone = prefs.getString(_kPhone);
     if (name == null || name.isEmpty || phone == null || phone.isEmpty) return;
-    state = UserProfile(
+    final profile = UserProfile(
       name: name,
       language: prefs.getString(_kLang) ?? 'en',
-      phone: phone,
+      phone: PhoneUtils.normalize(phone),
+    );
+    state = profile;
+    // Re-sync FCM token every time app opens (critical for push when app is closed).
+    NotificationService.syncFcmToken(
+      profile.phone,
+      name: profile.name,
+      language: profile.language,
     );
   }
 
   Future<void> _saveProfile(UserProfile profile) async {
+    final normalized = profile.copyWith(phone: PhoneUtils.normalize(profile.phone));
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kName, profile.name);
-    await prefs.setString(_kLang, profile.language);
-    await prefs.setString(_kPhone, profile.phone);
-    state = profile;
-    // Save FCM token to backend
-    _registerFcmToken(profile);
+    await prefs.setString(_kName, normalized.name);
+    await prefs.setString(_kLang, normalized.language);
+    await prefs.setString(_kPhone, normalized.phone);
+    state = normalized;
+    await _registerFcmToken(normalized);
   }
 
   Future<void> _registerFcmToken(UserProfile profile) async {
-    try {
-      final token = await NotificationService.getToken();
-      if (token != null) {
-        await ApiService.registerUser(
-          phone: profile.phone,
-          name: profile.name,
-          language: profile.language,
-          fcmToken: token,
-        );
-      }
-    } catch (_) {}
+    await NotificationService.syncFcmToken(
+      profile.phone,
+      name: profile.name,
+      language: profile.language,
+    );
   }
 
   /// Step 1: Send OTP to phone number

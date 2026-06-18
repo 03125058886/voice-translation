@@ -192,7 +192,8 @@ class CallNotifier extends StateNotifier<CallState> {
     final audio = data['audio'] as String?;
     final format = data['format'] as String? ?? 'mp3';
     if (audio != null && audio.isNotEmpty) {
-      // Play translated TTS for the listener — do not touch local pipeline state.
+      // ignore: avoid_print
+      print('[Call] audio_response received (${audio.length} chars, format=$format)');
       _audio.playAudioBase64(audio, format: format);
     }
   }

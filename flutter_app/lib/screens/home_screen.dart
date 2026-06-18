@@ -8,6 +8,7 @@ import '../providers/call_provider.dart';
 import '../services/api_service.dart';
 import '../services/lobby_service.dart';
 import '../services/notification_service.dart';
+import '../utils/phone_utils.dart';
 import '../theme/app_theme.dart';
 import '../widgets/language_selector.dart';
 import 'call_screen.dart';
@@ -64,7 +65,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         final profile = ref.read(authProvider);
         if (profile != null) {
           await ApiService.registerUser(
-            phone: profile.phone,
+            phone: PhoneUtils.normalize(profile.phone),
+            name: profile.name,
+            language: profile.language,
+          );
+          await NotificationService.syncFcmToken(
+            profile.phone,
             name: profile.name,
             language: profile.language,
           );
@@ -217,7 +223,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Future<void> _callByPhone(String rawPhone) async {
     final profile = ref.read(authProvider);
     if (profile == null) return;
-    final formatted = rawPhone.startsWith('+') ? rawPhone : '+92${rawPhone.replaceFirst(RegExp(r'^0'), '')}';
+    final formatted = PhoneUtils.normalize(rawPhone);
 
     if (!_lobbyConnected) {
       setState(() => _loading = true);
@@ -550,7 +556,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 onPressed: () async {
                   final raw = ctrl.text.trim();
                   if (raw.isEmpty) return;
-                  final formatted = raw.startsWith('+') ? raw : '+92${raw.replaceFirst(RegExp(r'^0'), '')}';
+                  final formatted = PhoneUtils.normalize(raw);
                   Navigator.pop(context);
                   final user = await ApiService.findUserByPhone(formatted);
                   if (!mounted) return;

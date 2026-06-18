@@ -1,16 +1,25 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'api_service.dart';
+import '../utils/phone_utils.dart';
 
-// Top-level background handler (required by FCM)
+// Top-level background handler (required by FCM) — must stay top-level.
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   await NotificationService.ensureLocalNotificationsReady();
-  if (message.data['type'] == 'incoming_call') {
-    await NotificationService.showIncomingCallFromData(message.data);
+  final data = message.data;
+  final type = data['type'];
+  if (type == 'incoming_call') {
+    await NotificationService.showIncomingCallFromData(data);
+  } else if (type == 'new_message') {
+    await NotificationService.showMessageNotificationFromData(data);
   }
 }
 
@@ -18,20 +27,21 @@ class NotificationService {
   static final _fcm = FirebaseMessaging.instance;
   static final _localNotif = FlutterLocalNotificationsPlugin();
   static bool _localReady = false;
+  static String? _registeredPhone;
 
-  static const _channelId = 'incoming_calls_ring';
-  static const _channelName = 'Incoming Calls';
-  static const _notifId = 0;
+  static const _callChannelId = 'incoming_calls_ring';
+  static const _callChannelName = 'Incoming Calls';
+  static const _msgChannelId = 'new_messages';
+  static const _msgChannelName = 'Messages';
+  static const _callNotifId = 0;
+  static const _msgNotifId = 1;
 
-  // Callback set by home_screen when app is in foreground
   static void Function(Map<String, dynamic>)? onIncomingCallData;
-
-  // Holds call data from notification tap when app was terminated
   static Map<String, dynamic>? pendingCallData;
 
-  static AndroidNotificationDetails get _androidCallDetails => AndroidNotificationDetails(
-        _channelId,
-        _channelName,
+  static AndroidNotificationDetails _callDetails() => AndroidNotificationDetails(
+        _callChannelId,
+        _callChannelName,
         importance: Importance.max,
         priority: Priority.max,
         playSound: true,
@@ -46,22 +56,40 @@ class NotificationService {
         visibility: NotificationVisibility.public,
       );
 
+  static AndroidNotificationDetails _messageDetails() => const AndroidNotificationDetails(
+        _msgChannelId,
+        _msgChannelName,
+        importance: Importance.high,
+        priority: Priority.high,
+        playSound: true,
+        enableVibration: true,
+        visibility: NotificationVisibility.public,
+      );
+
   static Future<void> ensureLocalNotificationsReady() async {
     if (_localReady) return;
 
-    final androidChannel = AndroidNotificationChannel(
-      _channelId,
-      _channelName,
+    final androidPlugin = _localNotif
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+
+    await androidPlugin?.createNotificationChannel(AndroidNotificationChannel(
+      _callChannelId,
+      _callChannelName,
       importance: Importance.max,
       playSound: true,
       sound: const UriAndroidNotificationSound('content://settings/system/ringtone'),
       enableVibration: true,
       vibrationPattern: Int64List.fromList([0, 500, 500, 500, 500, 500]),
-    );
+    ));
 
-    final androidPlugin = _localNotif
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
-    await androidPlugin?.createNotificationChannel(androidChannel);
+    await androidPlugin?.createNotificationChannel(const AndroidNotificationChannel(
+      _msgChannelId,
+      _msgChannelName,
+      importance: Importance.high,
+      playSound: true,
+      enableVibration: true,
+    ));
+
     await androidPlugin?.requestNotificationsPermission();
 
     const initSettings = InitializationSettings(
@@ -77,19 +105,21 @@ class NotificationService {
   static void _onNotificationTapped(NotificationResponse details) {
     final payload = details.payload;
     if (payload == null || payload.isEmpty) return;
-    final parts = payload.split('|');
-    if (parts.length < 4) return;
-    final data = {
-      'session_id': parts[0],
-      'caller_name': parts[1],
-      'caller_language': parts[2],
-      'caller_id': parts[3],
-      'type': 'incoming_call',
-    };
-    if (onIncomingCallData != null) {
-      onIncomingCallData!(data);
-    } else {
-      pendingCallData = data;
+    if (payload.startsWith('call|')) {
+      final parts = payload.substring(5).split('|');
+      if (parts.length < 4) return;
+      final data = {
+        'session_id': parts[0],
+        'caller_name': parts[1],
+        'caller_language': parts[2],
+        'caller_id': parts[3],
+        'type': 'incoming_call',
+      };
+      if (onIncomingCallData != null) {
+        onIncomingCallData!(data);
+      } else {
+        pendingCallData = data;
+      }
     }
   }
 
@@ -97,16 +127,17 @@ class NotificationService {
     await _fcm.requestPermission(alert: true, badge: true, sound: true);
     await ensureLocalNotificationsReady();
 
-    // Foreground FCM — always ring + show in-app overlay
     FirebaseMessaging.onMessage.listen((message) {
       final data = message.data;
-      if (data['type'] == 'incoming_call') {
+      final type = data['type'];
+      if (type == 'incoming_call') {
         showIncomingCallFromData(data);
         onIncomingCallData?.call(data);
+      } else if (type == 'new_message') {
+        showMessageNotificationFromData(data);
       }
     });
 
-    // Background → foreground tap handler
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
       final data = message.data;
       if (data['type'] == 'incoming_call') {
@@ -118,30 +149,74 @@ class NotificationService {
       }
     });
 
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-
     final initial = await _fcm.getInitialMessage();
     if (initial != null && initial.data['type'] == 'incoming_call') {
       pendingCallData = initial.data;
     }
+
+    _fcm.onTokenRefresh.listen((token) async {
+      final phone = _registeredPhone;
+      if (phone != null && phone.isNotEmpty) {
+        await ApiService.updateFcmToken(phone: phone, token: token);
+      }
+    });
   }
 
-  static Future<String?> getToken() async {
-    return await _fcm.getToken();
+  /// Register FCM token with backend — call on every app start after login.
+  static Future<void> syncFcmToken(
+    String phone, {
+    String? name,
+    String? language,
+  }) async {
+    final normalized = PhoneUtils.normalize(phone);
+    if (normalized.isEmpty) return;
+    _registeredPhone = normalized;
+    try {
+      final token = await _fcm.getToken();
+      if (token == null) {
+        debugPrint('[FCM] getToken returned null — check notification permission');
+        return;
+      }
+      if (name != null && name.isNotEmpty) {
+        await ApiService.registerUser(
+          phone: normalized,
+          name: name,
+          language: language ?? 'en',
+          fcmToken: token,
+        );
+      } else {
+        await ApiService.updateFcmToken(phone: normalized, token: token);
+      }
+      debugPrint('[FCM] token synced for $normalized');
+    } catch (e) {
+      debugPrint('[FCM] token sync failed: $e');
+    }
   }
 
-  /// Show ringing notification — works for FCM, lobby WebSocket, and foreground.
+  static Future<String?> getToken() async => _fcm.getToken();
+
   static Future<void> showIncomingCallFromData(Map<String, dynamic> data) async {
     await ensureLocalNotificationsReady();
     final callerName = data['caller_name'] ?? 'Someone';
-
     await _localNotif.show(
-      _notifId,
+      _callNotifId,
       '$callerName is calling...',
       'Incoming Voice Translation Call — tap to answer',
-      NotificationDetails(android: _androidCallDetails),
+      NotificationDetails(android: _callDetails()),
       payload:
-          '${data['session_id']}|${data['caller_name']}|${data['caller_language']}|${data['caller_id']}',
+          'call|${data['session_id']}|${data['caller_name']}|${data['caller_language']}|${data['caller_id']}',
+    );
+  }
+
+  static Future<void> showMessageNotificationFromData(Map<String, dynamic> data) async {
+    await ensureLocalNotificationsReady();
+    final sender = data['sender_name'] ?? 'Someone';
+    final preview = data['preview'] ?? 'New message';
+    await _localNotif.show(
+      _msgNotifId,
+      sender,
+      preview,
+      NotificationDetails(android: _messageDetails()),
     );
   }
 
@@ -150,6 +225,6 @@ class NotificationService {
   }
 
   static Future<void> cancelCallNotification() async {
-    await _localNotif.cancel(_notifId);
+    await _localNotif.cancel(_callNotifId);
   }
 }

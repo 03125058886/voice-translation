@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -14,6 +15,8 @@ typedef AudioChunkCallback = void Function(Uint8List pcmBytes);
 typedef VolumeCallback = void Function(double volume);
 
 class AudioService {
+  static const _speakerChannel = MethodChannel('com.example.voice_translation/audio');
+
   final _recorder = AudioRecorder();
   final _player = AudioPlayer();
   final _uuid = const Uuid();
@@ -29,7 +32,7 @@ class AudioService {
 
   Future<void> initialize() async {
     final session = await AudioSession.instance;
-    // Keep original session profile — real-time mic capture depends on this.
+    // Original profile — keeps real-time mic capture stable.
     await session.configure(AudioSessionConfiguration(
       avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
       avAudioSessionCategoryOptions:
@@ -96,35 +99,49 @@ class AudioService {
   void mute() => _isMuted = true;
   void unmute() => _isMuted = false;
 
+  Future<void> _routeToSpeaker() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _speakerChannel.invokeMethod('setSpeakerphoneOn', {'on': true});
+    } catch (e) {
+      debugPrint('[AudioService] speaker route failed: $e');
+    }
+  }
+
   Future<void> playAudioBase64(String base64Audio, {String format = 'mp3'}) async {
     if (base64Audio.isEmpty) return;
     try {
       if (!_sessionReady) await initialize();
 
-      final bytes = base64Decode(base64Audio);
-      if (bytes.isEmpty) return;
-
-      final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/${_uuid.v4()}.$format');
-      await file.writeAsBytes(bytes, flush: true);
-
-      // Activate session for playback without reconfiguring mic capture.
       final session = await AudioSession.instance;
       await session.setActive(true);
+      await _routeToSpeaker();
 
       await _playSub?.cancel();
       if (_player.playing) await _player.stop();
 
-      await _player.setFilePath(file.path);
-      await _player.seek(Duration.zero);
+      // Same approach as web frontend — data URI playback.
+      final mime = format == 'mpeg' ? 'mp3' : format;
+      final uri = Uri.parse('data:audio/$mime;base64,$base64Audio');
+      try {
+        await _player.setAudioSource(AudioSource.uri(uri));
+      } catch (_) {
+        // Fallback: write temp file if data URI unsupported on device.
+        final bytes = base64Decode(base64Audio);
+        final dir = await getTemporaryDirectory();
+        final file = File('${dir.path}/${_uuid.v4()}.$format');
+        await file.writeAsBytes(bytes, flush: true);
+        await _player.setFilePath(file.path);
+        _playSub = _player.playerStateStream.listen((state) {
+          if (state.processingState == ProcessingState.completed) {
+            file.delete().ignore();
+          }
+        });
+      }
+
       await _player.setVolume(1.0);
       await _player.play();
-
-      _playSub = _player.playerStateStream.listen((state) {
-        if (state.processingState == ProcessingState.completed) {
-          file.delete().ignore();
-        }
-      });
+      debugPrint('[AudioService] playing translated audio ($format, ${base64Audio.length} b64 chars)');
     } catch (e, st) {
       debugPrint('[AudioService] playback failed: $e\n$st');
     }

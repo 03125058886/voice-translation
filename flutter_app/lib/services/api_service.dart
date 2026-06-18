@@ -20,6 +20,18 @@ class ApiService {
         'Accept': 'application/json',
       };
 
+  static Future<void> updateFcmToken({
+    required String phone,
+    required String token,
+  }) async {
+    final encoded = Uri.encodeComponent(phone);
+    await _client.put(
+      Uri.parse('$_base/api/users/$encoded/fcm'),
+      headers: _headers,
+      body: jsonEncode({'fcm_token': token}),
+    );
+  }
+
   static Future<void> registerUser({
     required String phone,
     required String name,

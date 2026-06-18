@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
+import '../utils/phone_utils.dart';
 import '../theme/app_theme.dart';
 import '../widgets/language_selector.dart';
 
@@ -37,11 +38,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
-  String get _fullPhone {
-    final num = _phoneCtrl.text.trim();
-    if (num.startsWith('+')) return num;
-    return '+92${num.replaceFirst(RegExp(r'^0'), '')}'; // Pakistan default
-  }
+  String get _fullPhone => PhoneUtils.normalize(_phoneCtrl.text.trim());
 
   Future<void> _sendOtp() async {
     final phone = _fullPhone;

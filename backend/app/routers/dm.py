@@ -3,10 +3,27 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
-from app.core.database import save_direct_message, get_direct_messages, get_conversations
+from app.core.database import save_direct_message, get_direct_messages, get_conversations, get_user
+from app.services.fcm_service import send_dm_notification
+from app.utils.phone import normalize_phone
 from app.routers.chat import UPLOAD_DIR, ALLOWED_MIME, MAX_FILE_SIZE, _mime_ext
 
 router = APIRouter()
+
+
+async def _push_dm_notification(receiver_phone: str, sender_phone: str, preview: str) -> None:
+    receiver = await get_user(normalize_phone(receiver_phone))
+    if not receiver or not receiver.get("fcm_token"):
+        return
+    sender = await get_user(normalize_phone(sender_phone))
+    sender_name = (sender or {}).get("name") or sender_phone
+    await send_dm_notification(
+        fcm_token=receiver["fcm_token"],
+        sender_name=sender_name,
+        sender_phone=normalize_phone(sender_phone),
+        preview=preview,
+    )
+
 
 
 class SendMessageRequest(BaseModel):
@@ -22,6 +39,7 @@ async def send_message(req: SendMessageRequest):
     msg = await save_direct_message(req.sender_phone, req.receiver_phone, req.content.strip())
     if not msg:
         raise HTTPException(status_code=503, detail="Database unavailable")
+    await _push_dm_notification(req.receiver_phone, req.sender_phone, req.content.strip())
     return msg
 
 
@@ -56,6 +74,8 @@ async def upload_dm_file(
     )
     if not msg:
         raise HTTPException(status_code=503, detail="Database unavailable")
+    preview = "📷 Photo" if message_type == "image" else "🎤 Voice message" if message_type == "voice" else "📎 File"
+    await _push_dm_notification(receiver_phone, sender_phone, preview)
     return msg
 
 
