@@ -28,9 +28,12 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: SystemUiOverlay.values);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        await ref.read(callProvider.notifier).startCapture();
-      } catch (_) {}
+      final st = ref.read(callProvider);
+      if (st.status == SessionStatus.active) {
+        try {
+          await ref.read(callProvider.notifier).startCaptureWhenReady();
+        } catch (_) {}
+      }
       _loadChatHistory();
     });
   }
@@ -67,9 +70,10 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     final state = ref.watch(callProvider);
 
     ref.listen<CallState>(callProvider, (prev, next) {
-      if (next.isCapturing || !next.isConnected) return;
-      if (prev?.status != SessionStatus.active && next.status == SessionStatus.active) {
-        ref.read(callProvider.notifier).startCapture();
+      if (prev?.status != SessionStatus.active &&
+          next.status == SessionStatus.active &&
+          !next.isCapturing) {
+        ref.read(callProvider.notifier).startCaptureWhenReady();
       }
     });
 

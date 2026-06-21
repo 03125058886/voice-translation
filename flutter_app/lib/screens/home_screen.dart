@@ -186,7 +186,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             name: ref.read(authProvider)?.name ?? '',
             language: ref.read(authProvider)?.language ?? _language,
           );
-          await ref.read(callProvider.notifier).startCapture();
           if (!mounted) return;
           Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CallScreen()));
         } catch (e) {
@@ -280,7 +279,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         language: profile?.language ?? _language,
         phone: profile?.phone,
       );
-      await ref.read(callProvider.notifier).startCapture();
       if (!mounted) return;
       Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CallScreen()));
     } catch (e) {
