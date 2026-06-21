@@ -28,9 +28,14 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: SystemUiOverlay.values);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        await ref.read(callProvider.notifier).startCapture();
-      } catch (_) {}
+      final st = ref.read(callProvider);
+      if (!st.isCapturing) {
+        try {
+          await ref.read(callProvider.notifier).startCapture();
+        } catch (e) {
+          debugPrint('[CallScreen] startCapture failed: $e');
+        }
+      }
       _loadChatHistory();
     });
   }
@@ -65,13 +70,6 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(callProvider);
-
-    ref.listen<CallState>(callProvider, (prev, next) {
-      if (next.isCapturing || !next.isConnected) return;
-      if (prev?.status != SessionStatus.active && next.status == SessionStatus.active) {
-        ref.read(callProvider.notifier).startCapture();
-      }
-    });
 
     // Auto-navigate back when remote party ends the call
     if (state.remoteEnded) {

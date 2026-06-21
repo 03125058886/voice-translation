@@ -10,31 +10,29 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 import '../config/app_config.dart';
-import 'mic_helper.dart';
 
 typedef AudioChunkCallback = void Function(Uint8List pcmBytes);
 typedef VolumeCallback = void Function(double volume);
 
-class _QueuedAudio {
-  final String base64Audio;
-  final String format;
-  const _QueuedAudio(this.base64Audio, this.format);
-}
-
 class AudioService {
   static const _speakerChannel = MethodChannel('com.example.voice_translation/audio');
+
+  /// Clears Android call audio mode so mic/file recording works again after a call.
+  static Future<void> resetAndroidAudioMode() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _speakerChannel.invokeMethod('resetAudioMode');
+    } catch (_) {}
+  }
 
   final _recorder = AudioRecorder();
   final _player = AudioPlayer();
   final _uuid = const Uuid();
-  final _playbackQueue = <_QueuedAudio>[];
-  bool _isPlayingQueue = false;
 
   StreamSubscription<Uint8List>? _recordSub;
   StreamSubscription<PlayerState>? _playSub;
   bool _isRecording = false;
   bool _isMuted = false;
-  bool _sessionReady = false;
 
   AudioChunkCallback? onChunk;
   VolumeCallback? onVolume;
@@ -46,27 +44,24 @@ class AudioService {
       avAudioSessionCategoryOptions:
           AVAudioSessionCategoryOptions.allowBluetooth |
           AVAudioSessionCategoryOptions.defaultToSpeaker,
-      avAudioSessionMode: AVAudioSessionMode.spokenAudio,
+      avAudioSessionMode: AVAudioSessionMode.voiceChat,
       androidAudioAttributes: AndroidAudioAttributes(
         contentType: AndroidAudioContentType.speech,
+        flags: AndroidAudioFlags.none,
         usage: AndroidAudioUsage.voiceCommunication,
       ),
       androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
       androidWillPauseWhenDucked: false,
     ));
-    await session.setActive(true);
-    _sessionReady = true;
   }
 
-  Future<bool> hasPermission() => MicHelper.ensurePermission();
+  Future<bool> hasPermission() async => _recorder.hasPermission();
 
   Future<void> startRecording() async {
     if (_isRecording) return;
     if (!await hasPermission()) throw Exception('Microphone permission denied');
 
-    await MicHelper.prepareForRecording();
-    if (!_sessionReady) await initialize();
-    await _routeToSpeaker();
+    await resetAndroidAudioMode();
 
     final stream = await _recorder.startStream(
       const RecordConfig(
@@ -86,7 +81,7 @@ class AudioService {
       onChunk?.call(bytes);
       _computeVolume(bytes);
     });
-    debugPrint('[AudioService] mic stream started');
+    debugPrint('[AudioService] recording started');
   }
 
   void _computeVolume(Uint8List bytes) {
@@ -105,65 +100,34 @@ class AudioService {
     await _recorder.stop();
     _isRecording = false;
     onVolume?.call(0.0);
+    await resetAndroidAudioMode();
   }
 
   void mute() => _isMuted = true;
   void unmute() => _isMuted = false;
 
-  Future<void> _routeToSpeaker() async {
-    if (!Platform.isAndroid) return;
-    try {
-      await _speakerChannel.invokeMethod('setSpeakerphoneOn', {'on': true});
-    } catch (e) {
-      debugPrint('[AudioService] speaker route failed: $e');
-    }
-  }
-
   Future<void> playAudioBase64(String base64Audio, {String format = 'mp3'}) async {
     if (base64Audio.isEmpty) return;
-    _playbackQueue.add(_QueuedAudio(base64Audio, format));
-    if (!_isPlayingQueue) unawaited(_drainPlaybackQueue());
-  }
-
-  Future<void> _drainPlaybackQueue() async {
-    if (_isPlayingQueue) return;
-    _isPlayingQueue = true;
     try {
-      while (_playbackQueue.isNotEmpty) {
-        final item = _playbackQueue.removeAt(0);
-        await _playOne(item.base64Audio, format: item.format);
-      }
-    } finally {
-      _isPlayingQueue = false;
-      if (_playbackQueue.isNotEmpty) unawaited(_drainPlaybackQueue());
-    }
-  }
-
-  Future<void> _playOne(String base64Audio, {String format = 'mp3'}) async {
-    try {
-      if (!_sessionReady) await initialize();
-      await _routeToSpeaker();
-
-      await _playSub?.cancel();
-      if (_player.playing) await _player.stop();
-
       final bytes = base64Decode(base64Audio);
       if (bytes.isEmpty) return;
 
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/${_uuid.v4()}.$format');
       await file.writeAsBytes(bytes, flush: true);
+
+      await _playSub?.cancel();
+      if (_player.playing) await _player.stop();
       await _player.setFilePath(file.path);
       _playSub = _player.playerStateStream.listen((state) {
         if (state.processingState == ProcessingState.completed) {
           file.delete().ignore();
         }
       });
-
       await _player.setVolume(1.0);
       await _player.play();
-    } catch (e, st) {
-      debugPrint('[AudioService] playback failed: $e\n$st');
+    } catch (e) {
+      debugPrint('[AudioService] playback failed: $e');
     }
   }
 
@@ -171,13 +135,9 @@ class AudioService {
   bool get isMuted => _isMuted;
 
   Future<void> dispose() async {
-    _playbackQueue.clear();
-    _isPlayingQueue = false;
     await stopRecording();
     await _playSub?.cancel();
     await _player.dispose();
     await _recorder.dispose();
-    _sessionReady = false;
-    await MicHelper.prepareForRecording();
   }
 }

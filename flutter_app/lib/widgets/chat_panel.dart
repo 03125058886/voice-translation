@@ -7,7 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 import '../services/api_service.dart';
-import '../services/mic_helper.dart';
+import '../services/audio_service.dart';
 import '../theme/app_theme.dart';
 
 /// Input bar only — message list lives in the unified feed in CallScreen.
@@ -77,11 +77,12 @@ class _ChatInputBarState extends State<ChatInputBar> {
 
   Future<void> _startRecord() async {
     if (_recording) return;
-    if (!await MicHelper.ensurePermission()) {
+    final hasPermission = await _recorder.hasPermission();
+    if (!hasPermission) {
       _toast('Microphone permission required');
       return;
     }
-    await MicHelper.prepareForRecording();
+    await AudioService.resetAndroidAudioMode();
     final dir = await getTemporaryDirectory();
     _recordPath = '${dir.path}/${_uuid.v4()}.m4a';
     await _recorder.start(

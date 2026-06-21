@@ -9,7 +9,7 @@ import 'package:uuid/uuid.dart';
 import '../config/app_config.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
-import '../services/mic_helper.dart';
+import '../services/audio_service.dart';
 import '../theme/app_theme.dart';
 
 class DirectChatScreen extends ConsumerStatefulWidget {
@@ -108,7 +108,8 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
 
   Future<void> _startRecord() async {
     if (_recording) return;
-    if (!await MicHelper.ensurePermission()) {
+    final hasPermission = await _recorder.hasPermission();
+    if (!hasPermission) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Microphone permission required'), backgroundColor: AppColors.red500),
@@ -116,7 +117,7 @@ class _DirectChatScreenState extends ConsumerState<DirectChatScreen> {
       }
       return;
     }
-    await MicHelper.prepareForRecording();
+    await AudioService.resetAndroidAudioMode();
     final dir = await getTemporaryDirectory();
     _recordPath = '${dir.path}/${_uuid.v4()}.m4a';
     await _recorder.start(

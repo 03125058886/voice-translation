@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import '../models/session.dart';
@@ -26,12 +25,8 @@ class CallNotifier extends StateNotifier<CallState> {
     String? callerPhone,
     String? targetPhone,
   }) async {
-    await _resetCallServices();
-    state = const CallState().copyWith(
-      myName: name,
-      myLanguage: language,
-      status: SessionStatus.waiting,
-    );
+    await _freshServices();
+    state = state.copyWith(myName: name, myLanguage: language, status: SessionStatus.waiting);
     final result = await ApiService.createSession(
       participantName: name,
       participantLanguage: language,
@@ -52,12 +47,8 @@ class CallNotifier extends StateNotifier<CallState> {
     required String language,
     String? phone,
   }) async {
-    await _resetCallServices();
-    state = const CallState().copyWith(
-      myName: name,
-      myLanguage: language,
-      status: SessionStatus.waiting,
-    );
+    await _freshServices();
+    state = state.copyWith(myName: name, myLanguage: language, status: SessionStatus.waiting);
     final result = await ApiService.joinSession(
       sessionId: sessionId,
       participantName: name,
@@ -77,8 +68,8 @@ class CallNotifier extends StateNotifier<CallState> {
     required String name,
     required String language,
   }) async {
-    await _resetCallServices();
-    state = const CallState().copyWith(
+    await _freshServices();
+    state = state.copyWith(
       sessionId: sessionId,
       participantId: participantId,
       myName: name,
@@ -88,7 +79,7 @@ class CallNotifier extends StateNotifier<CallState> {
     await _connectAndStart();
   }
 
-  Future<void> _resetCallServices() async {
+  Future<void> _freshServices() async {
     _ws.dispose();
     await _audio.dispose();
     _ws = WebSocketService();
@@ -97,6 +88,7 @@ class CallNotifier extends StateNotifier<CallState> {
 
   Future<void> _connectAndStart() async {
     await _audio.initialize();
+
     _audio.onChunk = (bytes) => _ws.sendAudio(bytes);
     _audio.onVolume = (v) => state = state.copyWith(volume: v);
 
@@ -114,32 +106,15 @@ class CallNotifier extends StateNotifier<CallState> {
     _ws.on('error',              _onError);
 
     await _ws.connect(state.sessionId!, state.participantId!);
-    if (!_ws.isConnected) {
-      throw Exception('Could not connect to translation server');
-    }
     _ws.setLanguage(state.myLanguage);
   }
 
   Future<void> startCapture() async {
     if (state.isCapturing) return;
-    if (!_ws.isConnected) return;
-    try {
-      await _audio.startRecording();
-      state = state.copyWith(isCapturing: true);
-      debugPrint('[Call] mic ON');
-    } catch (e) {
-      debugPrint('[Call] mic failed: $e');
-      rethrow;
-    }
-  }
-
-  void _markActiveAndStartMic() {
-    if (state.status != SessionStatus.active) {
-      state = state.copyWith(status: SessionStatus.active);
-    }
-    if (!state.isCapturing) {
-      unawaited(startCapture());
-    }
+    final granted = await _audio.hasPermission();
+    if (!granted) throw Exception('Microphone permission denied');
+    await _audio.startRecording();
+    state = state.copyWith(isCapturing: true);
   }
 
   void _onSessionInfo(Map<String, dynamic> msg) {
@@ -160,7 +135,6 @@ class CallNotifier extends StateNotifier<CallState> {
       otherName: hasOther ? other.name : null,
       otherLanguage: hasOther ? other.language : null,
     );
-    if (hasOther) _markActiveAndStartMic();
   }
 
   void _onParticipantJoined(Map<String, dynamic> msg) {
@@ -170,7 +144,6 @@ class CallNotifier extends StateNotifier<CallState> {
       otherLanguage: data['language'] as String?,
       status: SessionStatus.active,
     );
-    _markActiveAndStartMic();
   }
 
   void _onParticipantLeft(Map<String, dynamic> msg) {
@@ -194,6 +167,7 @@ class CallNotifier extends StateNotifier<CallState> {
   void _onTranslation(Map<String, dynamic> msg) {
     final data = msg['data'] as Map<String, dynamic>;
     final isLocal = data['speaker_id'] == state.participantId;
+
     final entry = TranscriptEntry(
       id: _uuid.v4(),
       speakerId: data['speaker_id'] as String,
@@ -205,6 +179,7 @@ class CallNotifier extends StateNotifier<CallState> {
       timestamp: DateTime.now(),
       isLocal: isLocal,
     );
+
     state = state.copyWith(
       transcript: [...state.transcript, entry],
       partialText: '',
@@ -257,7 +232,8 @@ class CallNotifier extends StateNotifier<CallState> {
 
   void _onError(Map<String, dynamic> msg) {
     final data = msg['data'] as Map<String, dynamic>;
-    debugPrint('[Pipeline error] ${data['message']}');
+    // ignore: avoid_print
+    print('[Pipeline error] ${data['message']}');
   }
 
   void toggleMute() {
@@ -277,6 +253,9 @@ class CallNotifier extends StateNotifier<CallState> {
     await _audio.stopRecording();
     _ws.dispose();
     await _audio.dispose();
+    await AudioService.resetAndroidAudioMode();
+    _ws = WebSocketService();
+    _audio = AudioService();
     state = const CallState();
   }
 
