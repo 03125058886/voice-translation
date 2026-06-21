@@ -48,7 +48,12 @@ class CallNotifier extends StateNotifier<CallState> {
     required String language,
     String? phone,
   }) async {
-    state = state.copyWith(myName: name, myLanguage: language, status: SessionStatus.waiting);
+    await _resetCallServices();
+    state = const CallState().copyWith(
+      myName: name,
+      myLanguage: language,
+      status: SessionStatus.waiting,
+    );
     final result = await ApiService.joinSession(
       sessionId: sessionId,
       participantName: name,
@@ -70,7 +75,8 @@ class CallNotifier extends StateNotifier<CallState> {
     required String name,
     required String language,
   }) async {
-    state = state.copyWith(
+    await _resetCallServices();
+    state = const CallState().copyWith(
       sessionId: sessionId,
       participantId: participantId,
       myName: name,
@@ -80,12 +86,17 @@ class CallNotifier extends StateNotifier<CallState> {
     await _connectAndStart();
   }
 
+  /// Tear down any previous call resources before starting a new session.
+  Future<void> _resetCallServices() async {
+    _ws.dispose();
+    await _audio.dispose();
+    _ws = WebSocketService();
+    _audio = AudioService();
+  }
+
   // --- WebSocket + audio ---
 
   Future<void> _connectAndStart() async {
-    // Fresh services for each call
-    _ws = WebSocketService();
-    _audio = AudioService();
     await _audio.initialize();
 
     _audio.onChunk = (bytes) => _ws.sendAudio(bytes);
@@ -108,6 +119,24 @@ class CallNotifier extends StateNotifier<CallState> {
     if (!_ws.isConnected) {
       throw Exception('Could not connect to translation server');
     }
+  }
+
+  /// Start (or restart) mic capture once the remote party is connected.
+  Future<void> startCaptureWhenReady() async {
+    if (state.status != SessionStatus.active) return;
+    if (state.isCapturing) {
+      await restartCapture();
+      return;
+    }
+    await startCapture();
+  }
+
+  /// Restart mic — fixes caller-side echo cancellation after TTS playback.
+  Future<void> restartCapture() async {
+    if (!state.isCapturing && state.status != SessionStatus.active) return;
+    await _audio.stopRecording();
+    state = state.copyWith(isCapturing: false);
+    await startCapture();
   }
 
   Future<void> startCapture() async {
@@ -137,6 +166,9 @@ class CallNotifier extends StateNotifier<CallState> {
       otherName: hasOther ? other.name : null,
       otherLanguage: hasOther ? other.language : null,
     );
+    if (hasOther) {
+      unawaited(startCaptureWhenReady());
+    }
   }
 
   void _onParticipantJoined(Map<String, dynamic> msg) {
@@ -146,6 +178,7 @@ class CallNotifier extends StateNotifier<CallState> {
       otherLanguage: data['language'] as String?,
       status: SessionStatus.active,
     );
+    unawaited(startCaptureWhenReady());
   }
 
   void _onParticipantLeft(Map<String, dynamic> msg) {

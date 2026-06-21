@@ -36,6 +36,7 @@ class AudioService {
   bool _isRecording = false;
   bool _isMuted = false;
   bool _sessionReady = false;
+  bool _resumeMicAfterPlayback = false;
 
   AudioChunkCallback? onChunk;
   VolumeCallback? onVolume;
@@ -79,7 +80,8 @@ class AudioService {
         encoder: AudioEncoder.pcm16bits,
         sampleRate: AppConfig.audioSampleRate,
         numChannels: AppConfig.audioChannels,
-        echoCancel: true,
+        // Hardware AEC can silence the mic while translated TTS plays on speaker.
+        echoCancel: false,
         noiseSuppress: true,
         autoGain: true,
       ),
@@ -148,8 +150,14 @@ class AudioService {
   }
 
   Future<void> _playOne(String base64Audio, {String format = 'mp3'}) async {
+    final wasRecording = _isRecording;
     try {
       if (!_sessionReady) await initialize();
+
+      if (wasRecording) {
+        _resumeMicAfterPlayback = true;
+        await stopRecording();
+      }
 
       final session = await AudioSession.instance;
       await session.setActive(true);
@@ -179,6 +187,17 @@ class AudioService {
       debugPrint('[AudioService] played translated audio ($format, ${bytes.length} bytes)');
     } catch (e, st) {
       debugPrint('[AudioService] playback failed: $e\n$st');
+    } finally {
+      if (_resumeMicAfterPlayback) {
+        _resumeMicAfterPlayback = false;
+        if (onChunk != null) {
+          try {
+            await startRecording();
+          } catch (e) {
+            debugPrint('[AudioService] mic resume after playback failed: $e');
+          }
+        }
+      }
     }
   }
 

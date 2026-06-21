@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -19,12 +20,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final data = message.data;
   final type = data['type'];
   if (type == 'incoming_call') {
-    // When FCM includes a notification payload, Android already shows a tray
-    // notification while the app is killed. Keep our ringing notification as a
-    // fallback for data-only delivery.
-    if (message.notification == null) {
-      await NotificationService.showIncomingCallFromData(data);
-    }
+    await NotificationService.showIncomingCallFromData(data);
   } else if (type == 'new_message') {
     await NotificationService.showMessageNotificationFromData(data);
   }
@@ -46,21 +42,30 @@ class NotificationService {
   static void Function(Map<String, dynamic>)? onIncomingCallData;
   static Map<String, dynamic>? pendingCallData;
 
-  static AndroidNotificationDetails _callDetails() => AndroidNotificationDetails(
+  static AndroidNotificationDetails _callDetails(String callerName) => AndroidNotificationDetails(
         _callChannelId,
         _callChannelName,
+        channelDescription: 'Incoming voice translation calls',
         importance: Importance.max,
         priority: Priority.max,
         playSound: true,
         sound: const UriAndroidNotificationSound('content://settings/system/ringtone'),
         enableVibration: true,
-        vibrationPattern: Int64List.fromList([0, 500, 500, 500, 500, 500]),
+        vibrationPattern: Int64List.fromList([0, 800, 400, 800, 400, 800]),
         fullScreenIntent: true,
         category: AndroidNotificationCategory.call,
         ongoing: true,
         autoCancel: false,
-        timeoutAfter: 30000,
+        timeoutAfter: 45000,
         visibility: NotificationVisibility.public,
+        color: const Color(0xFF25D366),
+        colorized: true,
+        ticker: '$callerName is calling…',
+        styleInformation: BigTextStyleInformation(
+          'Voice Translation Call\nTap Accept or open the app to answer',
+          contentTitle: '$callerName is calling…',
+          summaryText: 'Incoming call',
+        ),
         actions: <AndroidNotificationAction>[
           const AndroidNotificationAction(
             'decline_call',
@@ -96,11 +101,12 @@ class NotificationService {
     await androidPlugin?.createNotificationChannel(AndroidNotificationChannel(
       _callChannelId,
       _callChannelName,
+      description: 'Incoming voice translation calls',
       importance: Importance.max,
       playSound: true,
       sound: const UriAndroidNotificationSound('content://settings/system/ringtone'),
       enableVibration: true,
-      vibrationPattern: Int64List.fromList([0, 500, 500, 500, 500, 500]),
+      vibrationPattern: Int64List.fromList([0, 800, 400, 800, 400, 800]),
     ));
 
     await androidPlugin?.createNotificationChannel(const AndroidNotificationChannel(
@@ -244,9 +250,9 @@ class NotificationService {
     final callerName = data['caller_name'] ?? 'Someone';
     await _localNotif.show(
       _callNotifId,
-      '$callerName is calling...',
-      'Incoming Voice Translation Call — tap to answer',
-      NotificationDetails(android: _callDetails()),
+      '$callerName is calling…',
+      'Voice Translation Call — tap Accept to answer',
+      NotificationDetails(android: _callDetails(callerName)),
       payload:
           'call|${data['session_id']}|${data['caller_name']}|${data['caller_language']}|${data['caller_id']}',
     );

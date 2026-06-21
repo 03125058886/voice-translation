@@ -86,7 +86,6 @@ class _JoinScreenState extends ConsumerState<JoinScreen> {
         name: widget.name,
         language: widget.language,
       );
-      await ref.read(callProvider.notifier).startCapture();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const CallScreen()),

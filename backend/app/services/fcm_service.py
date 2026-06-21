@@ -88,8 +88,6 @@ async def send_incoming_call(
             "caller_id": caller_id,
             "session_id": session_id,
         },
-        title=f"{caller_name} is calling",
-        body="Incoming Voice Translation Call — tap to answer",
     )
     if ok:
         logger.info(f"FCM call notification sent to {fcm_token[:10]}…")
