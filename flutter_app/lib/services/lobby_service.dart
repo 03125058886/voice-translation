@@ -158,23 +158,17 @@ class LobbyService {
     } catch (_) {}
   }
 
-  void callUser(String targetUserId, {String? language}) {
+  void callUser(String targetUserId) {
     _send({
       'type': 'call_user',
-      'data': {
-        'target_user_id': targetUserId,
-        if (language != null) 'caller_language': language,
-      },
+      'data': {'target_user_id': targetUserId},
     });
   }
 
-  void callByPhone(String targetPhone, {String? language}) {
+  void callByPhone(String targetPhone) {
     _send({
       'type': 'call_by_phone',
-      'data': {
-        'target_phone': targetPhone,
-        if (language != null) 'caller_language': language,
-      },
+      'data': {'target_phone': targetPhone},
     });
   }
 

@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart';
 import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
@@ -40,8 +40,6 @@ class AudioService {
 
   AudioChunkCallback? onChunk;
   VolumeCallback? onVolume;
-  VoidCallback? onRecordingStopped;
-  VoidCallback? onRecordingResumed;
 
   Future<void> initialize() async {
     final session = await AudioSession.instance;
@@ -96,7 +94,6 @@ class AudioService {
       onChunk?.call(bytes);
       _computeVolume(bytes);
     });
-    onRecordingResumed?.call();
   }
 
   void _computeVolume(Uint8List bytes) {
@@ -115,7 +112,6 @@ class AudioService {
     await _recorder.stop();
     _isRecording = false;
     onVolume?.call(0.0);
-    onRecordingStopped?.call();
   }
 
   void mute() => _isMuted = true;

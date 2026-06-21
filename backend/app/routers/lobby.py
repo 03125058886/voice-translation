@@ -105,9 +105,6 @@ async def lobby_websocket(
                 if not target_id or target_id == user_id:
                     continue
 
-                caller_language = data.get("caller_language") or user.language
-                user.language = caller_language
-
                 # Create a session for this direct call
                 sm = _session_manager
                 if not sm:
@@ -115,7 +112,7 @@ async def lobby_websocket(
 
                 participant = Participant(
                     name=user.name,
-                    language=caller_language,
+                    language=user.language,
                 )
                 session = Session(
                     name=f"Call: {user.name}",
@@ -166,11 +163,8 @@ async def lobby_websocket(
                     })
                     continue
 
-                caller_language = data.get("caller_language") or user.language
-                user.language = caller_language
-
                 # Create session first
-                participant = Participant(name=user.name, language=caller_language)
+                participant = Participant(name=user.name, language=user.language)
                 session = Session(name=f"Call: {user.name}", domain="general")
                 session = await sm.create_session(session)
                 session = await sm.add_participant(session.id, participant)
