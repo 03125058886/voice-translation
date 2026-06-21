@@ -118,6 +118,7 @@ class WebSocketService {
   }
 
   void sendAudio(Uint8List pcmBytes) => sendBinary(pcmBytes);
+  void setLanguage(String language) => send('set_language', {'language': language});
   void mute() => send('mute');
   void unmute() => send('unmute');
   void flush() => send('flush');

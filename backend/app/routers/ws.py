@@ -211,6 +211,33 @@ async def websocket_endpoint(
     pipeline.on_error = on_pipeline_error
     _active_pipelines[pipeline_key] = pipeline
 
+    async def broadcast_session_info(cur: Session):
+        payload = {
+            "type": "session_info",
+            "data": {
+                "session_id": session_id,
+                "participant_id": participant_id,
+                "language": participant.language,
+                "participants": [
+                    {
+                        "id": p.id,
+                        "name": p.name,
+                        "language": p.language,
+                        "status": p.status.value,
+                    }
+                    for p in cur.participants
+                ],
+            },
+        }
+        for p in cur.participants:
+            if p.websocket_id and sm.connections.is_connected(p.websocket_id):
+                await sm.connections.send_json(p.websocket_id, payload)
+
+    # Keep every connected client in sync (fixes caller stuck on "waiting").
+    fresh = await sm.get_session(session_id)
+    if fresh:
+        await broadcast_session_info(fresh)
+
     try:
         while True:
             msg = await websocket.receive()
@@ -221,14 +248,14 @@ async def websocket_endpoint(
                     break
 
                 others = cur_session.get_other_participants(participant_id)
-                connected_others = [
+                live_others = [
                     o for o in others
-                    if o.websocket_id and sm.connections.is_connected(o.websocket_id)
+                    if o.status != ParticipantStatus.DISCONNECTED
                 ]
-                if not connected_others:
+                if not live_others:
                     continue
 
-                pipeline.context.target_language = connected_others[0].language
+                pipeline.context.target_language = live_others[0].language
                 await pipeline.feed_audio(msg["bytes"])
 
             elif "text" in msg and msg["text"]:
@@ -255,6 +282,13 @@ async def websocket_endpoint(
                         new_lang = data.get("data", {}).get("language")
                         if new_lang:
                             pipeline.context.source_language = new_lang
+                            participant.language = new_lang
+                            cur = await sm.get_session(session_id)
+                            if cur:
+                                p = cur.get_participant(participant_id)
+                                if p:
+                                    p.language = new_lang
+                                    await sm.update_session(cur)
 
                 except json.JSONDecodeError:
                     pass

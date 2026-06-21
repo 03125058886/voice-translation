@@ -245,24 +245,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (profile == null) return;
     final formatted = PhoneUtils.normalize(rawPhone);
 
+    setState(() => _loading = true);
+    await _connectLobby(profile.name, profile.language, phone: profile.phone);
     if (!_lobbyConnected) {
-      setState(() => _loading = true);
-      await _connectLobby(profile.name, profile.language, phone: profile.phone);
-      if (!_lobbyConnected) {
-        setState(() => _loading = false);
-        _toast('Could not connect to server');
-        return;
-      }
+      setState(() => _loading = false);
+      _toast('Could not connect to server');
+      return;
     }
 
-    setState(() => _loading = true);
-    _lobby.callByPhone(formatted);
+    _lobby.callByPhone(formatted, language: profile.language);
   }
 
   void _callOnlineUser(OnlineUser target) {
-    if (!_lobbyConnected) { _toast('Connecting…'); return; }
+    final profile = ref.read(authProvider);
+    if (profile == null) return;
+    if (!_lobbyConnected) {
+      _connectLobby(profile.name, profile.language, phone: profile.phone);
+      _toast('Connecting…');
+      return;
+    }
     setState(() => _loading = true);
-    _lobby.callUser(target.userId);
+    _lobby.callUser(target.userId, language: profile.language);
   }
 
   Future<void> _acceptCall(IncomingCall call) async {
@@ -392,6 +395,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 setState(() => _language = v);
                 if (profile != null) {
                   await ref.read(authProvider.notifier).updateLanguage(v);
+                  await _connectLobby(profile.name, v, phone: profile.phone);
                 }
                 if (mounted) Navigator.pop(context);
               },
@@ -671,6 +675,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               onChanged: (v) async {
                 setState(() => _language = v);
                 await ref.read(authProvider.notifier).updateLanguage(v);
+                final p = ref.read(authProvider);
+                if (p != null) await _connectLobby(p.name, v, phone: p.phone);
               },
               label: 'Your Language',
             ),
