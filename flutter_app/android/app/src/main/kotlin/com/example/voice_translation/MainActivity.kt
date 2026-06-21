@@ -26,6 +26,13 @@ class MainActivity : FlutterActivity() {
                         am.isSpeakerphoneOn = on
                         result.success(null)
                     }
+                    "resetAudioMode" -> {
+                        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                        am.mode = AudioManager.MODE_NORMAL
+                        @Suppress("DEPRECATION")
+                        am.isSpeakerphoneOn = false
+                        result.success(null)
+                    }
                     "isIgnoringBatteryOptimizations" -> {
                         result.success(isIgnoringBatteryOptimizations())
                     }

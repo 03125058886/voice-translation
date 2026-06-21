@@ -248,14 +248,10 @@ async def websocket_endpoint(
                     break
 
                 others = cur_session.get_other_participants(participant_id)
-                live_others = [
-                    o for o in others
-                    if o.status != ParticipantStatus.DISCONNECTED
-                ]
-                if not live_others:
+                if not others:
                     continue
 
-                pipeline.context.target_language = live_others[0].language
+                pipeline.context.target_language = others[0].language
                 await pipeline.feed_audio(msg["bytes"])
 
             elif "text" in msg and msg["text"]:
