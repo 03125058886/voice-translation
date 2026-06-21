@@ -212,26 +212,26 @@ async def websocket_endpoint(
     _active_pipelines[pipeline_key] = pipeline
 
     async def broadcast_session_info(cur: Session):
+        payload = {
+            "type": "session_info",
+            "data": {
+                "session_id": session_id,
+                "participant_id": participant_id,
+                "language": participant.language,
+                "participants": [
+                    {
+                        "id": p.id,
+                        "name": p.name,
+                        "language": p.language,
+                        "status": p.status.value,
+                    }
+                    for p in cur.participants
+                ],
+            },
+        }
         for p in cur.participants:
-            if not p.websocket_id or not sm.connections.is_connected(p.websocket_id):
-                continue
-            await sm.connections.send_json(p.websocket_id, {
-                "type": "session_info",
-                "data": {
-                    "session_id": session_id,
-                    "participant_id": p.id,
-                    "language": p.language,
-                    "participants": [
-                        {
-                            "id": op.id,
-                            "name": op.name,
-                            "language": op.language,
-                            "status": op.status.value,
-                        }
-                        for op in cur.participants
-                    ],
-                },
-            })
+            if p.websocket_id and sm.connections.is_connected(p.websocket_id):
+                await sm.connections.send_json(p.websocket_id, payload)
 
     # Keep every connected client in sync (fixes caller stuck on "waiting").
     fresh = await sm.get_session(session_id)
@@ -248,9 +248,10 @@ async def websocket_endpoint(
                     break
 
                 others = cur_session.get_other_participants(participant_id)
-                if others:
-                    pipeline.context.target_language = others[0].language
+                if not others:
+                    continue
 
+                pipeline.context.target_language = others[0].language
                 await pipeline.feed_audio(msg["bytes"])
 
             elif "text" in msg and msg["text"]:
