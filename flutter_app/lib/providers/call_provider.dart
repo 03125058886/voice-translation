@@ -105,6 +105,9 @@ class CallNotifier extends StateNotifier<CallState> {
     _ws.on('error',              _onError);
 
     await _ws.connect(state.sessionId!, state.participantId!);
+    if (!_ws.isConnected) {
+      throw Exception('Could not connect to translation server');
+    }
   }
 
   Future<void> startCapture() async {

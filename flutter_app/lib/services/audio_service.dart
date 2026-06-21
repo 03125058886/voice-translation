@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 import '../config/app_config.dart';
@@ -14,12 +15,21 @@ import '../config/app_config.dart';
 typedef AudioChunkCallback = void Function(Uint8List pcmBytes);
 typedef VolumeCallback = void Function(double volume);
 
+class _QueuedAudio {
+  final String base64Audio;
+  final String format;
+
+  const _QueuedAudio(this.base64Audio, this.format);
+}
+
 class AudioService {
   static const _speakerChannel = MethodChannel('com.example.voice_translation/audio');
 
   final _recorder = AudioRecorder();
   final _player = AudioPlayer();
   final _uuid = const Uuid();
+  final _playbackQueue = <_QueuedAudio>[];
+  bool _isPlayingQueue = false;
 
   StreamSubscription<Uint8List>? _recordSub;
   StreamSubscription<PlayerState>? _playSub;
@@ -32,25 +42,29 @@ class AudioService {
 
   Future<void> initialize() async {
     final session = await AudioSession.instance;
-    // Original profile — keeps real-time mic capture stable.
     await session.configure(AudioSessionConfiguration(
       avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
       avAudioSessionCategoryOptions:
           AVAudioSessionCategoryOptions.allowBluetooth |
-          AVAudioSessionCategoryOptions.defaultToSpeaker,
-      avAudioSessionMode: AVAudioSessionMode.spokenAudio,
+          AVAudioSessionCategoryOptions.defaultToSpeaker |
+          AVAudioSessionCategoryOptions.mixWithOthers,
+      avAudioSessionMode: AVAudioSessionMode.voiceChat,
       androidAudioAttributes: AndroidAudioAttributes(
         contentType: AndroidAudioContentType.speech,
         flags: AndroidAudioFlags.audibilityEnforced,
-        usage: AndroidAudioUsage.assistant,
+        usage: AndroidAudioUsage.voiceCommunication,
       ),
-      androidAudioFocusGainType: AndroidAudioFocusGainType.gainTransientMayDuck,
+      androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
       androidWillPauseWhenDucked: false,
     ));
+    await session.setActive(true);
+    await _routeToSpeaker();
     _sessionReady = true;
   }
 
   Future<bool> hasPermission() async {
+    final mic = await Permission.microphone.request();
+    if (mic.isGranted) return true;
     return _recorder.hasPermission();
   }
 
@@ -58,8 +72,10 @@ class AudioService {
     if (_isRecording) return;
     if (!await hasPermission()) throw Exception('Microphone permission denied');
 
+    await _routeToSpeaker();
+
     final stream = await _recorder.startStream(
-      RecordConfig(
+      const RecordConfig(
         encoder: AudioEncoder.pcm16bits,
         sampleRate: AppConfig.audioSampleRate,
         numChannels: AppConfig.audioChannels,
@@ -100,7 +116,6 @@ class AudioService {
   void unmute() => _isMuted = false;
 
   Future<void> _routeToSpeaker() async {
-    if (!Platform.isAndroid) return;
     try {
       await _speakerChannel.invokeMethod('setSpeakerphoneOn', {'on': true});
     } catch (e) {
@@ -110,6 +125,29 @@ class AudioService {
 
   Future<void> playAudioBase64(String base64Audio, {String format = 'mp3'}) async {
     if (base64Audio.isEmpty) return;
+    _playbackQueue.add(_QueuedAudio(base64Audio, format));
+    if (!_isPlayingQueue) {
+      unawaited(_drainPlaybackQueue());
+    }
+  }
+
+  Future<void> _drainPlaybackQueue() async {
+    if (_isPlayingQueue) return;
+    _isPlayingQueue = true;
+    try {
+      while (_playbackQueue.isNotEmpty) {
+        final item = _playbackQueue.removeAt(0);
+        await _playOne(item.base64Audio, format: item.format);
+      }
+    } finally {
+      _isPlayingQueue = false;
+      if (_playbackQueue.isNotEmpty) {
+        unawaited(_drainPlaybackQueue());
+      }
+    }
+  }
+
+  Future<void> _playOne(String base64Audio, {String format = 'mp3'}) async {
     try {
       if (!_sessionReady) await initialize();
 
@@ -120,11 +158,9 @@ class AudioService {
       await _playSub?.cancel();
       if (_player.playing) await _player.stop();
 
-      // data: URIs are not reliably supported by ExoPlayer (just_audio on
-      // Android) — failures happen asynchronously after setAudioSource
-      // resolves, so a try/catch around it doesn't catch them. Write a temp
-      // file instead; this is the path that reliably plays on-device.
       final bytes = base64Decode(base64Audio);
+      if (bytes.isEmpty) return;
+
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/${_uuid.v4()}.$format');
       await file.writeAsBytes(bytes, flush: true);
@@ -137,7 +173,10 @@ class AudioService {
 
       await _player.setVolume(1.0);
       await _player.play();
-      debugPrint('[AudioService] playing translated audio ($format, ${base64Audio.length} b64 chars)');
+      await _player.processingStateStream
+          .firstWhere((s) => s == ProcessingState.completed || s == ProcessingState.idle)
+          .timeout(const Duration(seconds: 30), onTimeout: () => ProcessingState.completed);
+      debugPrint('[AudioService] played translated audio ($format, ${bytes.length} bytes)');
     } catch (e, st) {
       debugPrint('[AudioService] playback failed: $e\n$st');
     }
@@ -147,6 +186,8 @@ class AudioService {
   bool get isMuted => _isMuted;
 
   Future<void> dispose() async {
+    _playbackQueue.clear();
+    _isPlayingQueue = false;
     await stopRecording();
     await _playSub?.cancel();
     await _player.dispose();

@@ -29,17 +29,39 @@ def _init():
         return False
 
 
-async def _send_data_message(fcm_token: str, data: dict) -> bool:
+async def _send_data_message(
+    fcm_token: str,
+    data: dict,
+    *,
+    title: str | None = None,
+    body: str | None = None,
+) -> bool:
     if not fcm_token:
         return False
     if not _init():
         return False
     try:
         from firebase_admin import messaging
-        # Data-only — Flutter background handler shows custom notification with sound
+        payload = {k: str(v) for k, v in data.items()}
+        notification = None
+        android = messaging.AndroidConfig(priority="high", ttl=60)
+        if title:
+            notification = messaging.Notification(title=title, body=body or "")
+            android = messaging.AndroidConfig(
+                priority="high",
+                ttl=60,
+                notification=messaging.AndroidNotification(
+                    channel_id="incoming_calls_ring",
+                    priority="max",
+                    sound="default",
+                ),
+            )
+        # Notification + data so Android shows the call even when the app is killed.
+        # Data still reaches the Flutter background handler for custom ringing.
         message = messaging.Message(
-            data={k: str(v) for k, v in data.items()},
-            android=messaging.AndroidConfig(priority="high", ttl=60),
+            notification=notification,
+            data=payload,
+            android=android,
             token=fcm_token,
         )
         loop = asyncio.get_event_loop()
@@ -66,6 +88,8 @@ async def send_incoming_call(
             "caller_id": caller_id,
             "session_id": session_id,
         },
+        title=f"{caller_name} is calling",
+        body="Incoming Voice Translation Call — tap to answer",
     )
     if ok:
         logger.info(f"FCM call notification sent to {fcm_token[:10]}…")

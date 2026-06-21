@@ -31,7 +31,7 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   int _navIndex = 0;
   late String _language;
   bool _loading = false;
@@ -56,6 +56,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _language = widget.initialLanguage;
     _setupLobbyCallbacks();
     _setupFcmCallbacks();
@@ -87,12 +88,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     NotificationService.onIncomingCallData = null;
     _searchCtrl.dispose();
     _phoneCtrl.dispose();
     _callTimeoutTimer?.cancel();
     _lobby.disconnect();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    final profile = ref.read(authProvider);
+    if (profile == null) return;
+    NotificationService.syncFcmToken(
+      profile.phone,
+      name: profile.name,
+      language: profile.language,
+    );
+    _connectLobby(profile.name, profile.language, phone: profile.phone);
   }
 
   // ── FCM ──────────────────────────────────────────────────────────────────
@@ -109,12 +124,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _handleFcmCallData(Map<String, dynamic> data) {
     if (!mounted) return;
     NotificationService.showIncomingCallFromData(data);
-    setState(() => _incomingCall = IncomingCall(
+    final call = IncomingCall(
       callerId: data['caller_id'] ?? '',
       callerName: data['caller_name'] ?? 'Unknown',
       callerLanguage: data['caller_language'] ?? 'en',
       sessionId: data['session_id'] ?? '',
-    ));
+    );
+    final autoAccept = data['auto_accept'] == true || data['auto_accept'] == 'true';
+    if (autoAccept) {
+      _acceptCall(call);
+      return;
+    }
+    setState(() => _incomingCall = call);
   }
 
   // ── Lobby ─────────────────────────────────────────────────────────────────

@@ -19,7 +19,12 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final data = message.data;
   final type = data['type'];
   if (type == 'incoming_call') {
-    await NotificationService.showIncomingCallFromData(data);
+    // When FCM includes a notification payload, Android already shows a tray
+    // notification while the app is killed. Keep our ringing notification as a
+    // fallback for data-only delivery.
+    if (message.notification == null) {
+      await NotificationService.showIncomingCallFromData(data);
+    }
   } else if (type == 'new_message') {
     await NotificationService.showMessageNotificationFromData(data);
   }
@@ -56,6 +61,20 @@ class NotificationService {
         autoCancel: false,
         timeoutAfter: 30000,
         visibility: NotificationVisibility.public,
+        actions: <AndroidNotificationAction>[
+          const AndroidNotificationAction(
+            'decline_call',
+            'Decline',
+            cancelNotification: true,
+            showsUserInterface: false,
+          ),
+          const AndroidNotificationAction(
+            'accept_call',
+            'Accept',
+            cancelNotification: true,
+            showsUserInterface: true,
+          ),
+        ],
       );
 
   static AndroidNotificationDetails _messageDetails() => const AndroidNotificationDetails(
@@ -105,23 +124,30 @@ class NotificationService {
   }
 
   static void _onNotificationTapped(NotificationResponse details) {
+    final actionId = details.actionId;
     final payload = details.payload;
     if (payload == null || payload.isEmpty) return;
-    if (payload.startsWith('call|')) {
-      final parts = payload.substring(5).split('|');
-      if (parts.length < 4) return;
-      final data = {
-        'session_id': parts[0],
-        'caller_name': parts[1],
-        'caller_language': parts[2],
-        'caller_id': parts[3],
-        'type': 'incoming_call',
-      };
-      if (onIncomingCallData != null) {
-        onIncomingCallData!(data);
-      } else {
-        pendingCallData = data;
-      }
+    if (!payload.startsWith('call|')) return;
+
+    if (actionId == 'decline_call') {
+      cancelCallNotification();
+      return;
+    }
+
+    final parts = payload.substring(5).split('|');
+    if (parts.length < 4) return;
+    final data = {
+      'session_id': parts[0],
+      'caller_name': parts[1],
+      'caller_language': parts[2],
+      'caller_id': parts[3],
+      'type': 'incoming_call',
+      'auto_accept': actionId == 'accept_call',
+    };
+    if (onIncomingCallData != null) {
+      onIncomingCallData!(data);
+    } else {
+      pendingCallData = data;
     }
   }
 
@@ -157,6 +183,7 @@ class NotificationService {
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
       final data = message.data;
       if (data['type'] == 'incoming_call') {
+        data['auto_accept'] = 'false';
         if (onIncomingCallData != null) {
           onIncomingCallData!(data);
         } else {
@@ -167,7 +194,8 @@ class NotificationService {
 
     final initial = await _fcm.getInitialMessage();
     if (initial != null && initial.data['type'] == 'incoming_call') {
-      pendingCallData = initial.data;
+      pendingCallData = Map<String, dynamic>.from(initial.data);
+      pendingCallData!['auto_accept'] = 'false';
     }
 
     _fcm.onTokenRefresh.listen((token) async {
