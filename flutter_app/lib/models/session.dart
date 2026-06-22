@@ -76,6 +76,7 @@ class CallState {
   final String partialText;
   final List<ChatMessage> chatMessages;
   final bool remoteEnded;
+  final String? micError;
 
   const CallState({
     this.sessionId,
@@ -96,6 +97,7 @@ class CallState {
     this.partialText = '',
     this.chatMessages = const [],
     this.remoteEnded = false,
+    this.micError,
   });
 
   // clearOtherParticipant: explicitly set otherName/otherLanguage to null
@@ -119,6 +121,8 @@ class CallState {
     String? partialText,
     List<ChatMessage>? chatMessages,
     bool? remoteEnded,
+    String? micError,
+    bool clearMicError = false,
   }) =>
       CallState(
         sessionId: sessionId ?? this.sessionId,
@@ -139,6 +143,7 @@ class CallState {
         partialText: partialText ?? this.partialText,
         chatMessages: chatMessages ?? this.chatMessages,
         remoteEnded: remoteEnded ?? this.remoteEnded,
+        micError: clearMicError ? null : (micError ?? this.micError),
       );
 }
 

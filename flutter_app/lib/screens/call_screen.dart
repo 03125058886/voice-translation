@@ -120,6 +120,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
           child: Column(
             children: [
               _Header(state: state),
+              if (state.micError != null) _MicErrorBanner(message: state.micError!),
               _ParticipantsRow(state: state),
               Expanded(
                 child: _UnifiedFeed(
@@ -139,6 +140,40 @@ class _CallScreenState extends ConsumerState<CallScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _MicErrorBanner extends ConsumerWidget {
+  final String message;
+  const _MicErrorBanner({required this.message});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.red500.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.red500.withOpacity(0.4)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.mic_off_rounded, color: AppColors.red500, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Your mic isn\'t sending: $message',
+              style: const TextStyle(color: AppColors.red500, fontSize: 12),
+            ),
+          ),
+          TextButton(
+            onPressed: () => ref.read(callProvider.notifier).retryMicCapture(),
+            child: const Text('Retry', style: TextStyle(color: AppColors.red500, fontSize: 12)),
+          ),
+        ],
       ),
     );
   }

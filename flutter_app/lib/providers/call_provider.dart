@@ -122,13 +122,24 @@ class CallNotifier extends StateNotifier<CallState> {
   }
 
   /// Start (or restart) mic capture once the remote party is connected.
-  Future<void> startCaptureWhenReady() async {
+  /// Retries on failure (e.g. permission dialog not yet resolved) so a
+  /// transient denial doesn't leave one side of the call silent forever.
+  Future<void> startCaptureWhenReady({int attempt = 0}) async {
     if (state.status != SessionStatus.active) return;
     if (state.isCapturing) {
       await restartCapture();
       return;
     }
-    await startCapture();
+    try {
+      await startCapture();
+      state = state.copyWith(clearMicError: true);
+    } catch (e) {
+      if (attempt < 3) {
+        await Future.delayed(const Duration(seconds: 1));
+        return startCaptureWhenReady(attempt: attempt + 1);
+      }
+      state = state.copyWith(micError: e.toString().replaceAll('Exception: ', ''));
+    }
   }
 
   /// Restart mic — fixes caller-side echo cancellation after TTS playback.
@@ -141,10 +152,13 @@ class CallNotifier extends StateNotifier<CallState> {
 
   Future<void> startCapture() async {
     final granted = await _audio.hasPermission();
-    if (!granted) throw Exception('Microphone permission denied');
+    if (!granted) throw Exception('Microphone permission denied — enable it in app settings');
     await _audio.startRecording();
     state = state.copyWith(isCapturing: true);
   }
+
+  /// User-triggered retry from the call screen's mic-error banner.
+  Future<void> retryMicCapture() => startCaptureWhenReady();
 
   // --- Event handlers ---
 
