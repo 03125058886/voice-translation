@@ -101,6 +101,11 @@ class CallNotifier extends StateNotifier<CallState> {
 
     _audio.onChunk = (bytes) => _ws.sendAudio(bytes);
     _audio.onVolume = (v) => state = state.copyWith(volume: v);
+    _audio.onSilentMic = () {
+      if (state.micError == null) {
+        state = state.copyWith(micError: 'Mic seems silent — check mic permission/volume');
+      }
+    };
 
     _ws.onConnected = () => state = state.copyWith(isConnected: true);
     _ws.onDisconnected = () => state = state.copyWith(isConnected: false);

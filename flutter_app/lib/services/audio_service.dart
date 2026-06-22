@@ -33,13 +33,16 @@ class AudioService {
 
   StreamSubscription<Uint8List>? _recordSub;
   StreamSubscription<PlayerState>? _playSub;
+  Timer? _silenceWatchdog;
   bool _isRecording = false;
   bool _isMuted = false;
   bool _sessionReady = false;
   bool _resumeMicAfterPlayback = false;
+  double _maxVolumeSinceStart = 0;
 
   AudioChunkCallback? onChunk;
   VolumeCallback? onVolume;
+  VoidCallback? onSilentMic;
 
   Future<void> initialize() async {
     final session = await AudioSession.instance;
@@ -74,6 +77,11 @@ class AudioService {
     if (!await hasPermission()) throw Exception('Microphone permission denied');
 
     await _routeToSpeaker();
+    // Give Android time to settle MODE_IN_COMMUNICATION before opening the
+    // AudioRecord stream — starting it immediately after a mode switch can
+    // silently capture near-silence on some devices (no error, just no audio),
+    // which is worse than a visible failure since nothing looks wrong.
+    await Future.delayed(const Duration(milliseconds: 350));
 
     final stream = await _recorder.startStream(
       const RecordConfig(
@@ -88,11 +96,22 @@ class AudioService {
     );
 
     _isRecording = true;
+    _maxVolumeSinceStart = 0;
     _recordSub = stream.listen((chunk) {
       if (_isMuted) return;
       final bytes = Uint8List.fromList(chunk);
       onChunk?.call(bytes);
       _computeVolume(bytes);
+    });
+
+    // If the mic stays dead silent for several seconds while actively
+    // recording, the hardware/OS audio routing is likely stuck — surface it
+    // instead of failing silently forever.
+    _silenceWatchdog?.cancel();
+    _silenceWatchdog = Timer(const Duration(seconds: 6), () {
+      if (_isRecording && !_isMuted && _maxVolumeSinceStart < 0.01) {
+        onSilentMic?.call();
+      }
     });
   }
 
@@ -103,11 +122,14 @@ class AudioService {
     for (final s in samples) {
       sum += (s.abs() / 32768.0);
     }
-    onVolume?.call((sum / samples.length).clamp(0.0, 1.0));
+    final volume = (sum / samples.length).clamp(0.0, 1.0);
+    if (volume > _maxVolumeSinceStart) _maxVolumeSinceStart = volume;
+    onVolume?.call(volume);
   }
 
   Future<void> stopRecording() async {
     if (!_isRecording) return;
+    _silenceWatchdog?.cancel();
     await _recordSub?.cancel();
     await _recorder.stop();
     _isRecording = false;
