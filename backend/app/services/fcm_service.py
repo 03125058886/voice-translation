@@ -79,6 +79,9 @@ async def send_incoming_call(
     caller_id: str,
     session_id: str,
 ) -> bool:
+    # A notification payload (not just data) is required for many OEM Android
+    # skins (Xiaomi/Oppo/Vivo etc.) to wake and deliver to a fully killed app —
+    # data-only FCM is commonly dropped silently when no process is running.
     ok = await _send_data_message(
         fcm_token,
         {
@@ -88,6 +91,8 @@ async def send_incoming_call(
             "caller_id": caller_id,
             "session_id": session_id,
         },
+        title=f"{caller_name} is calling",
+        body="Incoming Voice Translation Call — tap to answer",
     )
     if ok:
         logger.info(f"FCM call notification sent to {fcm_token[:10]}…")
