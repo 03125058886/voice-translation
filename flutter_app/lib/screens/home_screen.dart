@@ -141,6 +141,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   // ── Lobby ─────────────────────────────────────────────────────────────────
 
   void _setupLobbyCallbacks() {
+    // Keep _lobbyConnected in sync with the actual socket state — without
+    // this, a lobby drop mid-session (e.g. during a call) leaves the flag
+    // stuck on true forever, so later call attempts get silently swallowed
+    // by LobbyService._send()'s connected check with zero user feedback.
+    _lobby.onConnected = () {
+      if (mounted) setState(() => _lobbyConnected = true);
+    };
+    _lobby.onDisconnected = () {
+      if (mounted) setState(() => _lobbyConnected = false);
+    };
+
     _lobby.onOnlineList = (users, myId) {
       if (mounted) setState(() => _onlineUsers = users);
     };
@@ -245,10 +256,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (profile == null) return;
     final formatted = PhoneUtils.normalize(rawPhone);
 
-    if (!_lobbyConnected) {
+    // Check the socket's live state, not just the cached flag — it can lag
+    // behind a real disconnect that happened while this screen sat idle.
+    if (!_lobby.isConnected) {
       setState(() => _loading = true);
       await _connectLobby(profile.name, profile.language, phone: profile.phone);
-      if (!_lobbyConnected) {
+      if (!_lobby.isConnected) {
         setState(() => _loading = false);
         _toast('Could not connect to server');
         return;
@@ -259,8 +272,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _lobby.callByPhone(formatted);
   }
 
-  void _callOnlineUser(OnlineUser target) {
-    if (!_lobbyConnected) { _toast('Connecting…'); return; }
+  Future<void> _callOnlineUser(OnlineUser target) async {
+    if (!_lobby.isConnected) {
+      final profile = ref.read(authProvider);
+      if (profile == null) return;
+      setState(() => _loading = true);
+      await _connectLobby(profile.name, profile.language, phone: profile.phone);
+      if (!_lobby.isConnected) {
+        setState(() => _loading = false);
+        _toast('Could not connect to server');
+        return;
+      }
+    }
     setState(() => _loading = true);
     _lobby.callUser(target.userId);
   }

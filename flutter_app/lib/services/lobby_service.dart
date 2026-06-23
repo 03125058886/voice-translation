@@ -56,15 +56,21 @@ class CallInitiated {
   });
 }
 
+typedef VoidCallback = void Function();
+
 class LobbyService {
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
   Timer? _pingTimer;
+  Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
+  bool _disposed = true;
   final _uuid = const Uuid();
 
   String? _userId;
   String? _name;
   String? _language;
+  String? _phone;
 
   bool _connected = false;
   bool get isConnected => _connected;
@@ -75,26 +81,38 @@ class LobbyService {
   CallInitiatedCallback? onCallInitiated;
   CallRejectedCallback? onCallRejected;
   UserStatusCallback? onUserStatusChange;
+  VoidCallback? onConnected;
+  VoidCallback? onDisconnected;
 
   Future<void> connect({required String name, required String language, String? phone}) async {
     _name = name;
     _language = language;
+    _phone = phone;
     _userId ??= _uuid.v4();
+    _disposed = false;
+    _reconnectAttempts = 0;
+    await _doConnect();
+  }
 
+  Future<void> _doConnect() async {
+    if (_disposed) return;
     final wsBase = AppConfig.wsBaseUrl;
-    final phoneParam = phone != null && phone.isNotEmpty ? '&phone=${Uri.encodeComponent(phone)}' : '';
+    final phoneParam = _phone != null && _phone!.isNotEmpty ? '&phone=${Uri.encodeComponent(_phone!)}' : '';
     final uri = Uri.parse(
-      '$wsBase/ws/lobby?name=${Uri.encodeComponent(name)}&language=$language&user_id=$_userId$phoneParam',
+      '$wsBase/ws/lobby?name=${Uri.encodeComponent(_name ?? '')}&language=$_language&user_id=$_userId$phoneParam',
     );
 
     try {
       _channel = WebSocketChannel.connect(uri);
+      await _channel!.ready;
       _connected = true;
+      _reconnectAttempts = 0;
+      onConnected?.call();
 
       _sub = _channel!.stream.listen(
         _onMessage,
-        onDone: () => _connected = false,
-        onError: (_) => _connected = false,
+        onDone: _handleDisconnect,
+        onError: (_) => _handleDisconnect(),
       );
 
       _pingTimer?.cancel();
@@ -103,7 +121,26 @@ class LobbyService {
       });
     } catch (_) {
       _connected = false;
+      onDisconnected?.call();
+      _scheduleReconnect();
     }
+  }
+
+  void _handleDisconnect() {
+    final wasConnected = _connected;
+    _connected = false;
+    if (wasConnected) onDisconnected?.call();
+    if (!_disposed) _scheduleReconnect();
+  }
+
+  void _scheduleReconnect() {
+    if (_disposed || _reconnectAttempts >= 8) return;
+    final delay = Duration(seconds: (1 << _reconnectAttempts).clamp(1, 20));
+    _reconnectAttempts++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(delay, () {
+      if (!_disposed) _doConnect();
+    });
   }
 
   void _onMessage(dynamic raw) {
@@ -188,9 +225,11 @@ class LobbyService {
   }
 
   Future<void> disconnect() async {
+    _disposed = true;
+    _connected = false;
     _pingTimer?.cancel();
+    _reconnectTimer?.cancel();
     await _sub?.cancel();
     await _channel?.sink.close();
-    _connected = false;
   }
 }
