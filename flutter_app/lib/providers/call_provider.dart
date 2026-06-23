@@ -126,36 +126,75 @@ class CallNotifier extends StateNotifier<CallState> {
     }
   }
 
+  // Multiple events (session_info, participant_joined, the CallScreen's
+  // state listener) can all react to the same "call became active" moment
+  // and call startCaptureWhenReady() within the same tick. Without this gate,
+  // two concurrent calls could both pass AudioService's _isRecording check
+  // before the first one finishes its startup delay and actually start the
+  // native recorder twice, silently corrupting capture on that side — the
+  // call still looks connected, but that party's mic produces no usable
+  // audio. Funnel every entry through one in-flight future so only one
+  // start ever reaches the recorder at a time.
+  Future<void>? _captureStartFuture;
+
   /// Start (or restart) mic capture once the remote party is connected.
   /// Retries on failure (e.g. permission dialog not yet resolved) so a
   /// transient denial doesn't leave one side of the call silent forever.
-  Future<void> startCaptureWhenReady({int attempt = 0}) async {
+  Future<void> startCaptureWhenReady({int attempt = 0}) {
+    if (_captureStartFuture != null) return _captureStartFuture!;
+    final future = _startCaptureWhenReady(attempt: attempt);
+    _captureStartFuture = future;
+    return future.whenComplete(() {
+      if (_captureStartFuture == future) _captureStartFuture = null;
+    });
+  }
+
+  Future<void> _startCaptureWhenReady({int attempt = 0}) async {
     if (state.status != SessionStatus.active) return;
     if (state.isCapturing) {
-      await restartCapture();
+      await _doRestartCapture();
       return;
     }
     try {
-      await startCapture();
+      await _doStartCapture();
       state = state.copyWith(clearMicError: true);
     } catch (e) {
       if (attempt < 3) {
         await Future.delayed(const Duration(seconds: 1));
-        return startCaptureWhenReady(attempt: attempt + 1);
+        return _startCaptureWhenReady(attempt: attempt + 1);
       }
       state = state.copyWith(micError: e.toString().replaceAll('Exception: ', ''));
     }
   }
 
   /// Restart mic — fixes caller-side echo cancellation after TTS playback.
-  Future<void> restartCapture() async {
+  Future<void> restartCapture() {
+    if (_captureStartFuture != null) return _captureStartFuture!;
+    final future = _doRestartCapture();
+    _captureStartFuture = future;
+    return future.whenComplete(() {
+      if (_captureStartFuture == future) _captureStartFuture = null;
+    });
+  }
+
+  Future<void> _doRestartCapture() async {
     if (!state.isCapturing && state.status != SessionStatus.active) return;
     await _audio.stopRecording();
     state = state.copyWith(isCapturing: false);
-    await startCapture();
+    await _doStartCapture();
   }
 
-  Future<void> startCapture() async {
+  Future<void> startCapture() {
+    if (_captureStartFuture != null) return _captureStartFuture!;
+    final future = _doStartCapture();
+    _captureStartFuture = future;
+    return future.whenComplete(() {
+      if (_captureStartFuture == future) _captureStartFuture = null;
+    });
+  }
+
+  Future<void> _doStartCapture() async {
+    if (state.isCapturing) return;
     final granted = await _audio.hasPermission();
     if (!granted) throw Exception('Microphone permission denied — enable it in app settings');
     await _audio.startRecording();

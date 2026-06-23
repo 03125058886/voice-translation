@@ -35,6 +35,7 @@ class AudioService {
   StreamSubscription<PlayerState>? _playSub;
   Timer? _silenceWatchdog;
   bool _isRecording = false;
+  bool _isStartingRecorder = false;
   bool _isMuted = false;
   bool _sessionReady = false;
   bool _resumeMicAfterPlayback = false;
@@ -73,46 +74,57 @@ class AudioService {
   }
 
   Future<void> startRecording() async {
-    if (_isRecording) return;
+    if (_isRecording || _isStartingRecorder) return;
     if (!await hasPermission()) throw Exception('Microphone permission denied');
 
-    await _routeToSpeaker();
-    // Give Android time to settle MODE_IN_COMMUNICATION before opening the
-    // AudioRecord stream — starting it immediately after a mode switch can
-    // silently capture near-silence on some devices (no error, just no audio),
-    // which is worse than a visible failure since nothing looks wrong.
-    await Future.delayed(const Duration(milliseconds: 350));
+    // Guards the gap between this check and _isRecording flipping true below.
+    // Without it, two near-simultaneous startRecording() calls (e.g. two call
+    // sites both reacting to the call becoming active) can both pass the
+    // _isRecording check and open a second native AudioRecord stream before
+    // the first finishes initializing — on Android this silently corrupts
+    // that side's capture (looks like it's recording, but produces no usable
+    // audio) instead of throwing, so the failure is invisible without this.
+    _isStartingRecorder = true;
+    try {
+      await _routeToSpeaker();
+      // Give Android time to settle MODE_IN_COMMUNICATION before opening the
+      // AudioRecord stream — starting it immediately after a mode switch can
+      // silently capture near-silence on some devices (no error, just no audio).
+      await Future.delayed(const Duration(milliseconds: 350));
+      if (_isRecording) return; // a concurrent call already finished starting
 
-    final stream = await _recorder.startStream(
-      const RecordConfig(
-        encoder: AudioEncoder.pcm16bits,
-        sampleRate: AppConfig.audioSampleRate,
-        numChannels: AppConfig.audioChannels,
-        // Hardware AEC can silence the mic while translated TTS plays on speaker.
-        echoCancel: false,
-        noiseSuppress: true,
-        autoGain: true,
-      ),
-    );
+      final stream = await _recorder.startStream(
+        const RecordConfig(
+          encoder: AudioEncoder.pcm16bits,
+          sampleRate: AppConfig.audioSampleRate,
+          numChannels: AppConfig.audioChannels,
+          echoCancel: true,
+          noiseSuppress: true,
+          autoGain: true,
+        ),
+      );
 
-    _isRecording = true;
-    _maxVolumeSinceStart = 0;
-    _recordSub = stream.listen((chunk) {
-      if (_isMuted) return;
-      final bytes = Uint8List.fromList(chunk);
-      onChunk?.call(bytes);
-      _computeVolume(bytes);
-    });
+      _isRecording = true;
+      _maxVolumeSinceStart = 0;
+      _recordSub = stream.listen((chunk) {
+        if (_isMuted) return;
+        final bytes = Uint8List.fromList(chunk);
+        onChunk?.call(bytes);
+        _computeVolume(bytes);
+      });
 
-    // If the mic stays dead silent for several seconds while actively
-    // recording, the hardware/OS audio routing is likely stuck — surface it
-    // instead of failing silently forever.
-    _silenceWatchdog?.cancel();
-    _silenceWatchdog = Timer(const Duration(seconds: 6), () {
-      if (_isRecording && !_isMuted && _maxVolumeSinceStart < 0.01) {
-        onSilentMic?.call();
-      }
-    });
+      // If the mic stays dead silent for several seconds while actively
+      // recording, the hardware/OS audio routing is likely stuck — surface it
+      // instead of failing silently forever.
+      _silenceWatchdog?.cancel();
+      _silenceWatchdog = Timer(const Duration(seconds: 6), () {
+        if (_isRecording && !_isMuted && _maxVolumeSinceStart < 0.01) {
+          onSilentMic?.call();
+        }
+      });
+    } finally {
+      _isStartingRecorder = false;
+    }
   }
 
   void _computeVolume(Uint8List bytes) {
